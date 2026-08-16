@@ -1,0 +1,21 @@
+{
+  "name": "ai-draughts-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AI Chinese Checkers backend: rules engine, LLM decision, rooms & SSE",
+  "type": "module",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "start:auto": "node start.mjs",
+    "dev": "node --watch src/index.js",
+    "test": "node test/engine.test.mjs"
+  },
+  "dependencies": {
+    "express": "^5.0.0",
+    "cors": "^2.8.5"
+  }
+}

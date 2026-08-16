@@ -1,0 +1,46 @@
+sequenceDiagram
+    actor U as 用户(建房者/观战者)
+    participant FE as 前端(React)
+    participant API as 后端REST
+    participant RM as rooms路由
+    participant GM as gameManager
+    participant SCH as scheduler(AI回合)
+    participant LLM as llmDecision
+    participant ENG as engine(rules/game)
+    participant SSE as sseManager
+
+    U->>FE: 创建房间(mode)
+    FE->>API: POST /api/rooms
+    API->>RM: 建 Room(3 座位,空)
+    RM-->>FE: Room
+
+    U->>FE: 指派 AI 到座位
+    FE->>API: PUT /api/rooms/:id/seats
+    RM-->>FE: Room(更新)
+
+    U->>FE: 点击"开始"(满员)
+    FE->>API: POST /api/rooms/:id/start
+    API->>GM: 初始化 GameState(棋盘/players/startedAt)
+    GM->>ENG: 建初始 board + 分配颜色
+    GM->>SSE: broadcast(room, state)
+    GM->>SCH: 触发 AI 回合(若当前=AI)
+    SCH->>LLM: decideMove(state, seat)
+    LLM->>LLM: callLLM→解析→校验→(失败)failback
+    LLM-->>SCH: {path, log}
+    SCH->>ENG: applyMove + evaluateProgress
+    SCH->>SSE: broadcast(state) + broadcast(log)
+    SCH->>SCH: 下一座位(循环, 直到人类/终局)
+
+    Note over FE,SSE: 前端 EventSource 监听 /api/rooms/:id/stream
+
+    alt 轮到人类
+        U->>FE: 点击选子+落点
+        FE->>API: POST /api/rooms/:id/move {from,to}
+        API->>ENG: 校验合法(匹配 getLegalMoves)
+        ENG->>SSE: broadcast(state)
+        API->>SCH: 触发下一 AI 座位
+    end
+
+    SCH->>ENG: 终局(evaluateProgress→endGame)
+    ENG->>SSE: broadcast(finished, scores)
+    Note over FE: 前端冻结,展示积分榜

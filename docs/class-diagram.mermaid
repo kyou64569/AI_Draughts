@@ -1,0 +1,83 @@
+classDiagram
+    class ModelConfig {
+        +String id
+        +String name
+        +String baseUrl
+        +String apiKey
+        +Date createdAt
+        +toPublic() String
+    }
+    class AIPlayer {
+        +String id
+        +String name
+        +String modelConfigId
+        +String model
+        +Date createdAt
+    }
+    class Room {
+        +String id
+        +("human"|"watch") mode
+        +Seat[] seats
+        +("setup"|"playing"|"finished") status
+        +String createdBy
+        +String gameId
+    }
+    class Seat {
+        +Number index
+        +("human"|"ai") type
+        +String aiPlayerId
+    }
+    class GameState {
+        +String id
+        +Map~string,string~ board
+        +Number turnSeat
+        +Player[] players
+        +GameMove[] history
+        +LogEntry[] logs
+        +ScoreEntry[] scores
+        +Date startedAt
+        +String[] autoPilotSeats
+        +("playing"|"finished") status
+    }
+    class Player {
+        +Number seat
+        +("red"|"green"|"blue") color
+        +("human"|"ai") kind
+        +String aiPlayerId
+        +Number finishRank
+        +Date finishTime
+    }
+    class GameMove {
+        +Number seat
+        +string from
+        +string to
+        +string[] path
+        +Boolean isFallback
+        +Date ts
+    }
+    class LogEntry {
+        +Number seat
+        +String model
+        +string thinking
+        +string reason
+        +string from
+        +string to
+        +Date timestamp
+        +Boolean isFallback
+    }
+    class ScoreEntry {
+        +Number seat
+        +string color
+        +Number base
+        +Number rank
+        +Number timePenalty
+        +Number score
+    }
+    Room "1" *-- "3" Seat
+    Room "1" *-- "0..1" GameState : gameId
+    GameState "1" *-- "3" Player
+    GameState "1" *-- "*" GameMove
+    GameState "1" *-- "*" LogEntry
+    GameState "1" *-- "3" ScoreEntry
+    Seat "0..1" --> AIPlayer
+    AIPlayer "1" --> "1" ModelConfig
