@@ -42,6 +42,9 @@ view_out.txt
 done.txt
 client_install*.log
 
+# ===== 代码审查报告（本地审查产物，勿入库）=====
+docs/code-review-*.md
+
 # ===== 客户端安装日志残留 =====
 client/install*.log
 

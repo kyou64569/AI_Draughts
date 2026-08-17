@@ -15,8 +15,14 @@ export function contentTypeValidator(req, res, next) {
   const method = req.method;
   // 只对需要请求体的方法进行验证
   if (['POST', 'PUT', 'PATCH'].includes(method)) {
+    // 无请求体（如 POST /start、POST /test）无需校验 Content-Type
+    const hasBody =
+      req.body !== undefined &&
+      req.body !== null &&
+      (typeof req.body !== 'object' || Object.keys(req.body).length > 0);
+    if (!hasBody) return next();
+
     const contentType = req.get('Content-Type');
-    
     // 允许 application/json 或 multipart/form-data
     if (!contentType || 
         (!contentType.startsWith('application/json') && 

@@ -31,6 +31,10 @@ async function request(method, path, body) {
   if (body !== undefined) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
+  } else if (['POST', 'PUT', 'PATCH'].includes(method)) {
+    // 无 body 的写请求（如 startRoom / testModelConfig）也显式声明 JSON，
+    // 与后端 contentTypeValidator 的校验保持一致
+    opts.headers['Content-Type'] = 'application/json';
   }
   let res;
   try {

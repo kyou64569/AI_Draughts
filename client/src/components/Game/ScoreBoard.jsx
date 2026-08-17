@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Paper,
   Typography,
@@ -27,7 +27,12 @@ const RANK_META = {
  * @param {boolean} finished 是否已终局
  */
 export default function ScoreBoard({ game, finished }) {
-  const [open, setOpen] = useState(Boolean(finished && game?.scores?.length));
+  const [open, setOpen] = useState(false);
+
+  // 终局时自动弹出排名覆盖层（finished 由 false→true 时触发，而非仅初始化时）
+  useEffect(() => {
+    if (finished && game?.scores?.length) setOpen(true);
+  }, [finished, game?.scores?.length]);
 
   if (!game) {
     return (

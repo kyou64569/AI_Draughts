@@ -212,7 +212,9 @@ export default function GamePage() {
     );
   }
 
-  const notStarted = !game && (
+  const archivedGame = game?.archived !== undefined;
+
+  const notStarted = !game && room?.status !== 'finished' && (
     <Alert severity="info" sx={{ mb: 2 }}>
       对局尚未开始。请返回房间页，满员后点击「开始对局」。
     </Alert>
@@ -237,7 +239,43 @@ export default function GamePage() {
     </Box>
   ) : null;
 
-  const boardEl = (
+  // 归档摘要（服务重启后）：显示对局结果而非空棋盘
+  const boardEl = archivedGame ? (
+    <Paper
+      variant="outlined"
+      sx={{
+        p: 2.5,
+        borderRadius: 4,
+        bgcolor: 'background.paper',
+        width: '100%',
+        borderColor: 'divider',
+      }}
+    >
+      <Typography variant="subtitle1" fontWeight={800} gutterBottom>
+        对局结果（历史归档）
+      </Typography>
+      {game.archived === false ? (
+        <Alert severity="warning" sx={{ mt: 1 }}>
+          该对局的棋谱记录在服务重启前已丢失，仅保留房间信息。今后对局记录会持久保存。
+        </Alert>
+      ) : (
+        <>
+          <ScoreBoard game={game} finished />
+          <Box sx={{ display: 'flex', gap: 2.5, mt: 1.5, color: 'text.secondary', flexWrap: 'wrap' }}>
+            <Typography variant="body2">手数：{game.moveCount ?? '—'}</Typography>
+            <Typography variant="body2">
+              结束时间：{game.finishedAt ? new Date(game.finishedAt).toLocaleString() : '—'}
+            </Typography>
+            {game.endReason ? (
+              <Typography variant="body2">
+                结束原因：{END_REASON_LABEL[game.endReason] ?? game.endReason}
+              </Typography>
+            ) : null}
+          </Box>
+        </>
+      )}
+    </Paper>
+  ) : (
     <Paper
       variant="outlined"
       sx={{

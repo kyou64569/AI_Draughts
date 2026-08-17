@@ -133,17 +133,26 @@ router.get(
   '/:id/models',
   asyncHandler(async (req, res) => {
     const cfg = await mustGetConfig(req.params.id);
+    let models = [];
     try {
-      const { models } = await listModels(cfg);
-      await store.updateItem('modelConfigs', cfg.id, { models, updatedAt: store.nowIso() });
-      sendOk(res, models);
+      const result = await listModels(cfg);
+      models = Array.isArray(result?.models) ? result.models : [];
     } catch (err) {
-      res.status(ERROR_CODES.LLM_UNAVAILABLE).json({
+      return res.status(ERROR_CODES.LLM_UNAVAILABLE).json({
         code: ERROR_CODES.LLM_UNAVAILABLE,
         data: null,
         message: `拉取模型列表失败: ${sanitizeError(err, cfg.apiKey ?? '')}`,
       });
     }
+
+    // 远端拉取成功：尝试在本地更新缓存与 modelCount（即使文件被锁也不阻断正常响应）
+    try {
+      await store.updateItem('modelConfigs', cfg.id, { models, updatedAt: store.nowIso() });
+    } catch (storeErr) {
+      console.warn(`[modelConfigs] 缓存模型列表到 store 失败 (非阻塞):`, storeErr?.message);
+    }
+
+    sendOk(res, models);
   }),
 );
 
@@ -154,7 +163,11 @@ router.post(
     const cfg = await mustGetConfig(req.params.id);
     const result = await testConnection(cfg);
     if (result.ok) {
-      await store.updateItem('modelConfigs', cfg.id, { lastTestedAt: store.nowIso() });
+      try {
+        await store.updateItem('modelConfigs', cfg.id, { lastTestedAt: store.nowIso() });
+      } catch (storeErr) {
+        console.warn(`[modelConfigs] 记录 lastTestedAt 失败 (非阻塞):`, storeErr?.message);
+      }
     }
     sendOk(res, result);
   }),

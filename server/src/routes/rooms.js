@@ -11,6 +11,7 @@ import {
   ROOM_STATUS_FINISHED,
   ROOM_STATUS_PLAYING,
   ROOM_STATUS_SETUP,
+  SEAT_COLORS,
   SEAT_COUNT,
   SEAT_TYPE_AI,
   SEAT_TYPE_HUMAN,
@@ -295,6 +296,54 @@ router.get(
       for (const log of game.logs.slice(-20)) {
         res.write(`event: ${SSE_EVENTS.LOG}\ndata: ${JSON.stringify(log)}\n\n`);
       }
+    } else if (room.status === ROOM_STATUS_FINISHED) {
+      // 服务重启后内存对局已清空：从归档恢复"结束摘要"，让牌桌显示结果而非"尚未开始"。
+      const archived = await store.findArchivedGame(room.gameId, room.id);
+      res.write(
+        `event: ${SSE_EVENTS.STATE}\ndata: ${JSON.stringify(
+          archived
+            ? {
+                id: archived.id,
+                roomId: archived.roomId ?? room.id,
+                status: ROOM_STATUS_FINISHED,
+                startedAt: archived.startedAt,
+                finishedAt: archived.finishedAt,
+                endReason: archived.endReason,
+                moveCount: archived.moveCount,
+                players: (archived.players ?? []).map((p) => ({ ...p })),
+                scores: archived.scores ?? [],
+                board: {},
+                history: [],
+                logs: [],
+                autoPilotSeats: archived.autoPilotSeats ?? [],
+                archived: true,
+              }
+            : {
+                // 归档也丢失（历史缺陷）：至少给出明确提示，避免误读为"尚未开始"
+                id: room.gameId ?? room.id,
+                roomId: room.id,
+                status: ROOM_STATUS_FINISHED,
+                startedAt: null,
+                finishedAt: room.finishedAt,
+                endReason: null,
+                moveCount: 0,
+                players: (room.seats ?? []).map((s, i) => ({
+                  seat: i,
+                  color: SEAT_COLORS[i] ?? null,
+                  kind: s.type === SEAT_TYPE_HUMAN ? 'human' : 'ai',
+                  name: null,
+                  model: null,
+                  finishRank: null,
+                })),
+                scores: [],
+                board: {},
+                history: [],
+                logs: [],
+                autoPilotSeats: [],
+                archived: false,
+              },
+        )}\n\n`,
+      );
     }
   }),
 );

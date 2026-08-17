@@ -27,6 +27,9 @@ import store from './store.js';
 /** @type {Set<string>} 正在运行调度循环的 gameId，避免重入。 */
 const running = new Set();
 
+/** 保留最近 N 局 finished 对局（防止 activeGames 无限增长）。 */
+const GAME_RETENTION = 20;
+
 /**
  * 睡眠。
  * @param {number} ms
@@ -49,12 +52,15 @@ export function broadcastState(state) {
  * @returns {Promise<void>}
  */
 export async function finalizeGame(state) {
+  // 先归档、后改房间状态：归档是唯一对局记录，若归档写失败会抛错（throwOnError），
+  // 房间保持 playing → 服务重启后 repairOrphanRooms 会自愈回 setup 可重开；
+  // 若先改 finished 再归档失败，会出现"房间已结束但归档丢失"的悬空状态。
+  await store.archiveGame(state);
   const room = await store.updateItem('rooms', state.roomId, {
     status: ROOM_STATUS_FINISHED,
     finishedAt: state.finishedAt,
     updatedAt: store.nowIso(),
   });
-  await store.archiveGame(state);
   broadcastState(state);
   if (room) sse.broadcast(state.roomId, SSE_EVENTS.ROOM, room);
   sse.broadcast(state.roomId, SSE_EVENTS.FINISHED, {
@@ -69,6 +75,15 @@ export async function finalizeGame(state) {
   });
   // 清理 SSE 连接，防止内存泄漏
   sse.closeRoom(state.roomId);
+
+  // 保留最近 GAME_RETENTION 局 finished 对局，超出则 dropGame 最旧的，
+  // 防止 activeGames 随对局数无限增长（前端复看由 games.json 归档兜底）。
+  const finishedGames = store.listGames().filter((g) => g.status !== GAME_STATUS_PLAYING);
+  if (finishedGames.length > GAME_RETENTION) {
+    for (const g of finishedGames.slice(0, finishedGames.length - GAME_RETENTION)) {
+      store.dropGame(g.id);
+    }
+  }
 }
 
 /**
