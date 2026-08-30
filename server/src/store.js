@@ -23,6 +23,7 @@ const COLLECTION_FILES = Object.freeze({
   aiPlayers: 'aiPlayers.json',
   rooms: 'rooms.json',
   games: 'games.json',
+  tournaments: 'tournaments.json',
 });
 
 /** @type {Map<string, object[]>} 内存缓存：集合名 -> 数据项数组。 */
@@ -347,7 +348,7 @@ export async function removeItem(name, id) {
 export async function updateItemIf(name, id, predicate, patch) {
   await ensureLoaded(name);
   return enqueue(name, async () => {
-    const items = memoryCache.get(name) ?? [];
+    const items = [...(memoryCache.get(name) ?? [])];
     const idx = items.findIndex((it) => it.id === id);
     if (idx < 0) return { updated: false, item: null };
     const current = items[idx];
@@ -367,13 +368,14 @@ export async function updateItemIf(name, id, predicate, patch) {
 /**
  * 转为可安全下发前端的对象：**剔除 apiKey**，仅暴露 modelCount。
  * @param {object} cfg 内部 ModelConfig
- * @returns {{id:string,name:string,baseUrl:string,modelCount:number,createdAt:string,updatedAt:string,hasApiKey:boolean}}
+ * @returns {{id:string,name:string,provider:string,baseUrl:string,modelCount:number,createdAt:string,updatedAt:string,hasApiKey:boolean}}
  */
 export function toPublicModelConfig(cfg) {
   const models = Array.isArray(cfg?.models) ? cfg.models : [];
   return {
     id: cfg.id,
     name: cfg.name,
+    provider: cfg.provider ?? 'openai',
     baseUrl: cfg.baseUrl,
     modelCount: models.length,
     createdAt: cfg.createdAt ?? null,
@@ -475,6 +477,11 @@ export async function archiveGame(state) {
     scores: state.scores ?? [],
     endReason: state.endReason ?? null,
     moveCount: Array.isArray(state.history) ? state.history.length : 0,
+    // 完整棋谱（含决策理由/延迟/token 用量）：棋谱回放与质量分析的数据源。
+    // 单局最多 MAX_GAME_PLIES(2000) 条，典型几百条，本地 JSON 存储量级可接受。
+    history: Array.isArray(state.history) ? state.history.map((m) => ({ ...m })) : [],
+    // ELO 变动（aiPlayerId → {before, after, delta}；仅 AI 对 AI 配对计入）
+    elo: state.eloChanges ?? null,
     autoPilotSeats: state.autoPilotSeats ?? [],
   };
   return enqueue('games', async () => {

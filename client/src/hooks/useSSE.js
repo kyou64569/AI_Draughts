@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { openRoomStream } from '../api/sse.js';
 import { useApp } from '../context/AppContext.jsx';
 
+/** 去重指纹上限：服务端每次（重）连只补发最近 ~20 条 log，保留 200 条指纹足够，防止长对局无界增长。 */
+const SEEN_LOG_KEYS_MAX = 200;
+
 /**
  * 订阅房间 SSE，维护 room / game / logs / finished 状态。
  * 连接即推 room 快照 +（已开局）state 快照 + 最近 ~20 条 log；
@@ -20,6 +23,8 @@ export function useRoomStream(roomId) {
   const [game, setGame] = useState(null);
   const [logs, setLogs] = useState([]);
   const [finished, setFinished] = useState(false);
+  /** AI 思考流式文本：{seat, text} | null；走子落定（state/log）后清空。 */
+  const [thinking, setThinking] = useState(null);
   const app = useApp();
   const seenLogKeys = useRef(new Set());
   const errorShownRef = useRef(false);
@@ -32,6 +37,7 @@ export function useRoomStream(roomId) {
     setGame(null);
     setLogs([]);
     setFinished(false);
+    setThinking(null);
     seenLogKeys.current = new Set();
     errorShownRef.current = false;
 
@@ -41,12 +47,25 @@ export function useRoomStream(roomId) {
       const key = `${l.timestamp}|${l.seat}|${l.from}|${l.to}|${l.reason}`;
       if (seenLogKeys.current.has(key)) return;
       seenLogKeys.current.add(key);
+      // FIFO 裁剪：使用数组队列避免迭代时删除，更稳健
+      if (seenLogKeys.current.size > SEEN_LOG_KEYS_MAX) {
+        const keysArray = Array.from(seenLogKeys.current);
+        const overflow = keysArray.length - SEEN_LOG_KEYS_MAX;
+        // 删除最早的 overflow 个指纹
+        for (let i = 0; i < overflow; i += 1) {
+          seenLogKeys.current.delete(keysArray[i]);
+        }
+      }
+      setThinking(null); // 日志落定 = 该手思考已结束
       setLogs((prev) => [...prev, l]);
     };
 
     const es = openRoomStream(roomId, {
       onState: (g) => {
-        if (g) setGame(g);
+        if (g) {
+          setThinking(null); // 新状态广播 = 上一手已落定
+          setGame(g);
+        }
       },
       onLog: appendLog,
       onRoom: (r) => {
@@ -58,6 +77,15 @@ export function useRoomStream(roomId) {
           if (!prev) return prev;
           const scores = f?.scores ?? prev.scores;
           return { ...prev, status: 'finished', scores };
+        });
+      },
+      onThinking: (t) => {
+        if (!t || typeof t.delta !== 'string' || t.delta === '') return;
+        setThinking((prev) => {
+          const base = prev?.seat === t.seat ? prev.text : '';
+          // 上限截断：思考文本只用于实时展示，超长丢弃最旧内容
+          const text = (base + t.delta).slice(-3000);
+          return { seat: t.seat, text };
         });
       },
       onError: (e) => {
@@ -79,5 +107,5 @@ export function useRoomStream(roomId) {
     };
   }, [roomId, app]);
 
-  return { room, game, logs, finished };
+  return { room, game, logs, finished, thinking };
 }

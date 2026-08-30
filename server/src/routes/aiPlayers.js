@@ -4,11 +4,28 @@
  */
 import express from 'express';
 
-import { ROOM_STATUS_FINISHED, THINKING_LEVELS } from '../constants.js';
+import { PROMPT_STYLE_MAX, ROOM_STATUS_FINISHED, THINKING_LEVELS } from '../constants.js';
+import { DEFAULT_ELO } from '../services/elo.js';
 import { asyncHandler, badRequest, conflict, notFound, requireString, sendOk } from '../http.js';
 import store from '../store.js';
 
 const router = express.Router();
+
+/**
+ * 校验自定义策略模板（可选字符串；空白视为未设置）。
+ * @param {any} value
+ * @returns {string|null}
+ */
+function parsePromptStyle(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') throw badRequest('promptStyle 必须是字符串');
+  const trimmed = value.trim();
+  if (trimmed === '') return null;
+  if (trimmed.length > PROMPT_STYLE_MAX) {
+    throw badRequest(`promptStyle 最长 ${PROMPT_STYLE_MAX} 字符`);
+  }
+  return trimmed;
+}
 
 /**
  * 补充展示用的模型配置名（不含任何密钥字段）。
@@ -25,6 +42,8 @@ function decorate(player, configs) {
     modelConfigName: cfg?.name ?? null,
     model: player.model,
     thinkingLevel: player.thinkingLevel ?? 'default',
+    promptStyle: player.promptStyle ?? null,
+    elo: Number.isFinite(player.elo) ? player.elo : DEFAULT_ELO,
     createdAt: player.createdAt ?? null,
     updatedAt: player.updatedAt ?? null,
   };
@@ -83,6 +102,7 @@ router.post(
     const modelConfigId = requireString(req.body?.modelConfigId, 'modelConfigId');
     const model = requireString(req.body?.model, 'model');
     const thinkingLevel = parseThinkingLevel(req.body?.thinkingLevel);
+    const promptStyle = parsePromptStyle(req.body?.promptStyle);
     await mustGetConfig(modelConfigId);
     const now = store.nowIso();
     const player = {
@@ -91,6 +111,8 @@ router.post(
       modelConfigId,
       model,
       thinkingLevel,
+      promptStyle,
+      elo: DEFAULT_ELO,
       createdAt: now,
       updatedAt: now,
     };
@@ -124,6 +146,7 @@ router.put(
     }
     if (req.body?.model !== undefined) patch.model = requireString(req.body.model, 'model');
     if (req.body?.thinkingLevel !== undefined) patch.thinkingLevel = parseThinkingLevel(req.body.thinkingLevel);
+    if (req.body?.promptStyle !== undefined) patch.promptStyle = parsePromptStyle(req.body.promptStyle);
     const updated = await store.updateItem('aiPlayers', req.params.id, patch);
     if (!updated) throw notFound(`AI 玩家不存在: ${req.params.id}`);
     const configs = await store.loadCollection('modelConfigs');

@@ -7,11 +7,13 @@ import {
   TextField,
   Button,
   Box,
+  Chip,
   FormControl,
   InputLabel,
   Select,
   MenuItem,
   CircularProgress,
+  Typography,
 } from '@mui/material';
 import { createAiPlayer, updateAiPlayer } from '../../api/client.js';
 import { useModels } from '../../hooks/useModels.js';
@@ -24,6 +26,22 @@ const THINKING_OPTIONS = [
   { value: 'low', label: '低', hint: '轻量思考' },
   { value: 'medium', label: '中', hint: '标准思考' },
   { value: 'high', label: '高', hint: '深度思考，最慢但最准' },
+];
+
+/** 预设下棋风格（写入自定义策略模板，可再手改）。 */
+const STYLE_PRESETS = [
+  {
+    label: '激进推进型',
+    text: '优先选择推进收益最大的走法，大胆使用长连跳快速突进抢占中路；宁可绕远路也要让棋子整体快速向目标营地推进。',
+  },
+  {
+    label: '稳步填充型',
+    text: '稳扎稳打，优先单步推进与短连跳，避免冒险的绕路走法；尽快按由深到浅的顺序把棋子送进目标营地，少给对手留跳板。',
+  },
+  {
+    label: '跳板铺路型',
+    text: '重视为后续走法搭跳板：优先选择能为己方后续连跳创造条件的落点，即使当前推进收益较小；保持棋子间距形成跳板链。',
+  },
 ];
 
 /**
@@ -39,7 +57,13 @@ const THINKING_OPTIONS = [
 export default function AIPlayerForm({ open, onClose, initial, configs, onSaved }) {
   const app = useApp();
   const isEdit = Boolean(initial?.id);
-  const [form, setForm] = useState({ name: '', modelConfigId: '', model: '', thinkingLevel: 'default' });
+  const [form, setForm] = useState({
+    name: '',
+    modelConfigId: '',
+    model: '',
+    thinkingLevel: 'default',
+    promptStyle: '',
+  });
   const [saving, setSaving] = useState(false);
 
   const activeConfigId = form.modelConfigId || (isEdit ? initial?.modelConfigId : configs[0]?.id);
@@ -52,6 +76,7 @@ export default function AIPlayerForm({ open, onClose, initial, configs, onSaved 
         modelConfigId: initial?.modelConfigId ?? (configs[0]?.id ?? ''),
         model: initial?.model ?? '',
         thinkingLevel: initial?.thinkingLevel ?? 'default',
+        promptStyle: initial?.promptStyle ?? '',
       });
     }
   }, [open, initial, configs]);
@@ -84,6 +109,7 @@ export default function AIPlayerForm({ open, onClose, initial, configs, onSaved 
         modelConfigId: form.modelConfigId,
         model: form.model.trim(),
         thinkingLevel: form.thinkingLevel,
+        promptStyle: form.promptStyle.trim() || null,
       };
       if (isEdit) {
         await updateAiPlayer(initial.id, payload);
@@ -189,9 +215,39 @@ export default function AIPlayerForm({ open, onClose, initial, configs, onSaved 
           </Select>
           <Box component="p" sx={{ mt: 0.5, mb: 0, typography: 'caption', color: 'text.secondary' }}>
             {THINKING_OPTIONS.find((o) => o.value === form.thinkingLevel)?.hint}
-            {' 思考强度越高，决策越慢、消耗 token 越多、通常越准确。'}
+            {' 思考强度越高，决策越慢、消耗 token 越多、通常越准确；仅 OpenAI 兼容协议透传（Anthropic/Gemini 暂不支持）。'}
           </Box>
         </FormControl>
+
+        <Box sx={{ mt: 2 }}>
+          <Typography variant="body2" fontWeight={700} gutterBottom>
+            自定义策略（可选）
+          </Typography>
+          <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap', mb: 1 }}>
+            {STYLE_PRESETS.map((p) => (
+              <Chip
+                key={p.label}
+                size="small"
+                label={p.label}
+                variant="outlined"
+                onClick={() => set('promptStyle', p.text)}
+              />
+            ))}
+            {form.promptStyle && (
+              <Chip size="small" label="清空" onClick={() => set('promptStyle', '')} />
+            )}
+          </Box>
+          <TextField
+            label="下棋风格指导（注入 Prompt 的策略文本）"
+            multiline
+            minRows={3}
+            maxRows={6}
+            fullWidth
+            value={form.promptStyle}
+            onChange={(e) => set('promptStyle', e.target.value)}
+            helperText="留空使用默认策略。点击预设标签快速填入后可再修改；最长 2000 字符，不会覆盖规则约束。"
+          />
+        </Box>
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>取消</Button>

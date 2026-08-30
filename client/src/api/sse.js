@@ -2,10 +2,10 @@ import { API_BASE } from './client.js';
 
 /**
  * 打开房间 SSE 流，按事件名分发到回调。
- * 事件名（与后端 SSE_EVENTS 一致）：state / log / room / finished。
+ * 事件名（与后端 SSE_EVENTS 一致）：state / log / room / finished / thinking。
  *
  * @param {string} roomId
- * @param {{onState?:Function, onLog?:Function, onRoom?:Function, onFinished?:Function, onError?:Function}} handlers
+ * @param {{onState?:Function, onLog?:Function, onRoom?:Function, onFinished?:Function, onThinking?:Function, onError?:Function}} handlers
  * @returns {EventSource}
  */
 export function openRoomStream(roomId, handlers = {}) {
@@ -30,6 +30,7 @@ export function openRoomStream(roomId, handlers = {}) {
   bind('log', handlers.onLog);
   bind('room', handlers.onRoom);
   bind('finished', handlers.onFinished);
+  bind('thinking', handlers.onThinking);
   if (handlers.onError) es.onerror = (e) => handlers.onError(e);
 
   return es;

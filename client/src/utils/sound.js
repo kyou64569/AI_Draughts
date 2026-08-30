@@ -98,21 +98,22 @@ class SoundManager {
     }
   }
 
-  /** 单步移动：轻快"嗒"（三角波，木鱼感）。 */
-  move() {
+  /** 单步移动：轻快"嗒"（三角波，木鱼感）。when 为 AudioContext 时间轴偏移（秒），用于连播排队。 */
+  move(when = 0) {
     if (!this.enabled) return;
     try {
-      this._tone({ freq: 720, endFreq: 500, dur: 0.1, type: 'triangle', gain: 0.16 });
+      this._tone({ freq: 720, endFreq: 500, dur: 0.1, type: 'triangle', gain: 0.16, when });
     } catch {
-      /* 同上 */
+      /* 播放失败静默忽略，绝不向上抛 */
     }
   }
 
   /**
    * 连跳：每次跳跃一个上行音，按 AudioContext 时间轴连奏。
    * @param {number} steps 跳跃次数（path 长度 - 1）
+   * @param {number} [when=0] 时间轴偏移（秒），用于快速连续走子时逐条排队不重叠
    */
-  multiJump(steps = 1) {
+  multiJump(steps = 1, when = 0) {
     if (!this.enabled) return;
     try {
       const base = 440;
@@ -120,7 +121,7 @@ class SoundManager {
       for (let i = 0; i < n; i += 1) {
         const semis = JUMP_SCALE_SEMIS[Math.min(i, JUMP_SCALE_SEMIS.length - 1)];
         const f = base * Math.pow(2, semis / 12);
-        this._tone({ freq: f, endFreq: f * 0.92, dur: 0.09, type: 'triangle', gain: 0.17, when: i * 0.085 });
+        this._tone({ freq: f, endFreq: f * 0.92, dur: 0.09, type: 'triangle', gain: 0.17, when: when + i * 0.085 });
       }
     } catch {
       /* 同上 */

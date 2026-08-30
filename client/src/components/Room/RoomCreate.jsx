@@ -5,15 +5,12 @@ import VideogameAssetIcon from '@mui/icons-material/VideogameAsset';
 import LiveTvIcon from '@mui/icons-material/LiveTv';
 import { createRoom } from '../../api/client.js';
 import { useApp } from '../../context/AppContext.jsx';
-import { COLOR_DEEP, COLOR_FILL, colorLabel } from '../../utils/colors.js';
+import { COLOR_DEEP, COLOR_FILL, colorLabel, MODE_SEAT_COLORS, PLAYER_COUNTS } from '../../utils/colors.js';
 
 const MODES = [
-  { value: 'human', label: '人机对战', desc: '1 名人类 + 2 个 AI', icon: <VideogameAssetIcon /> },
-  { value: 'watch', label: '观战模式', desc: '3 个 AI 自动对局', icon: <LiveTvIcon /> },
+  { value: 'human', label: '人机对战', desc: '1 名人类 + AI', icon: <VideogameAssetIcon /> },
+  { value: 'watch', label: '观战模式', desc: '全部 AI 自动对局', icon: <LiveTvIcon /> },
 ];
-
-/** 座位序号 → 颜色（与后端一致：seat0=red、seat1=green、seat2=blue）。 */
-const SEAT_COLORS = ['red', 'green', 'blue'];
 
 /**
  * 创建房间：模式选择（人机 / 观战）+ 人机对战可选人类座位 + 创建。
@@ -23,13 +20,19 @@ const SEAT_COLORS = ['red', 'green', 'blue'];
 export default function RoomCreate({ aiPlayerCount, onCreated }) {
   const app = useApp();
   const [mode, setMode] = useState('human');
+  const [playerCount, setPlayerCount] = useState(3);
   const [humanSeat, setHumanSeat] = useState(0);
   const [creating, setCreating] = useState(false);
+  const seatColors = MODE_SEAT_COLORS[playerCount] ?? [];
 
   const handleCreate = async () => {
     setCreating(true);
     try {
-      const room = await createRoom(mode === 'human' ? { mode, humanSeat } : { mode });
+      const payload =
+        mode === 'human'
+          ? { mode, playerCount, humanSeat }
+          : { mode, playerCount };
+      const room = await createRoom(payload);
       app.success('房间已创建');
       onCreated?.(room);
     } catch (e) {
@@ -81,13 +84,34 @@ export default function RoomCreate({ aiPlayerCount, onCreated }) {
         })}
       </Box>
 
+      {/* 对局人数（中国跳棋标准 2/3/4/6 人） */}
+      <Box sx={{ mb: 2 }}>
+        <Typography variant="body2" fontWeight={700} sx={{ mb: 1 }}>
+          对局人数
+        </Typography>
+        <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+          {PLAYER_COUNTS.map((n) => (
+            <Chip
+              key={n}
+              label={`${n} 人`}
+              color={playerCount === n ? 'primary' : 'default'}
+              variant={playerCount === n ? 'filled' : 'outlined'}
+              onClick={() => {
+                setPlayerCount(n);
+                setHumanSeat((s) => Math.min(s, n - 1));
+              }}
+            />
+          ))}
+        </Box>
+      </Box>
+
       {mode === 'human' && (
         <Box sx={{ mb: 2 }}>
           <Typography variant="body2" fontWeight={700} sx={{ mb: 1 }}>
             你的座位（颜色）
           </Typography>
           <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-            {SEAT_COLORS.map((color, i) => {
+            {seatColors.map((color, i) => {
               const active = humanSeat === i;
               return (
                 <Box

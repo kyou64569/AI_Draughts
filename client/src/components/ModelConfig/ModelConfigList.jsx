@@ -4,6 +4,13 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import ListAltIcon from '@mui/icons-material/ListAlt';
 import CableIcon from '@mui/icons-material/Cable';
 
+/** 协议展示名。 */
+const PROVIDER_LABEL = {
+  openai: 'OpenAI 兼容',
+  anthropic: 'Anthropic',
+  gemini: 'Gemini',
+};
+
 /**
  * 模型配置列表表格（2026-08 重构：卡片容器）。
  * @param {object[]} configs 公开模型配置（含 modelCount / hasApiKey）
@@ -26,6 +33,7 @@ export default function ModelConfigList({ configs, onEdit, onDelete, onFetchMode
         <TableHead>
           <TableRow>
             <TableCell>名称</TableCell>
+            <TableCell>协议</TableCell>
             <TableCell>Base URL</TableCell>
             <TableCell>模型数</TableCell>
             <TableCell>API Key</TableCell>
@@ -36,6 +44,9 @@ export default function ModelConfigList({ configs, onEdit, onDelete, onFetchMode
           {configs.map((c) => (
             <TableRow key={c.id} hover>
               <TableCell sx={{ fontWeight: 700 }}>{c.name}</TableCell>
+              <TableCell>
+                <Chip size="small" variant="outlined" label={PROVIDER_LABEL[c.provider] ?? c.provider ?? 'OpenAI 兼容'} />
+              </TableCell>
               <TableCell sx={{ maxWidth: 280, wordBreak: 'break-all' }}>{c.baseUrl}</TableCell>
               <TableCell>{c.modelCount ?? 0}</TableCell>
               <TableCell>

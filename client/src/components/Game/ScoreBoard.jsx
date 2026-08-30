@@ -12,12 +12,15 @@ import {
   Divider,
 } from '@mui/material';
 import EmojiEventsIcon from '@mui/icons-material/EmojiEvents';
-import { COLOR_DEEP, COLOR_FILL, colorLabel } from '../../utils/colors.js';
+import { COLOR_DEEP, COLOR_FILL, colorLabel, PIECES_PER_COLOR } from '../../utils/colors.js';
 
 const RANK_META = {
   1: { label: '冠军', color: '#fbbf24' },
   2: { label: '亚军', color: '#cbd5e1' },
   3: { label: '季军', color: '#f59e0b' },
+  4: { label: '第4名', color: '#94a3b8' },
+  5: { label: '第5名', color: '#94a3b8' },
+  6: { label: '第6名', color: '#94a3b8' },
 };
 
 /**
@@ -56,7 +59,7 @@ export default function ScoreBoard({ game, finished }) {
       <Stack divider={<Divider flexItem />} spacing={1.25}>
         {players.map((p) => {
           const inTarget = p.inTarget ?? 0;
-          const progress = Math.round((inTarget / 10) * 100);
+          const progress = Math.round((inTarget / PIECES_PER_COLOR) * 100);
           return (
             <Box key={p.seat}>
               {/* 第一行：色点 + 名称 + 状态徽标 */}
@@ -107,7 +110,7 @@ export default function ScoreBoard({ game, finished }) {
                   }}
                 />
                 <Typography variant="caption" fontWeight={700} sx={{ minWidth: 44, textAlign: 'right' }}>
-                  {inTarget} / 10
+                  {inTarget} / {PIECES_PER_COLOR}
                 </Typography>
               </Box>
             </Box>

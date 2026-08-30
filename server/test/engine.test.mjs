@@ -35,10 +35,22 @@ import {
   createInitialBoard,
   endGame,
   evaluateProgress,
+  isAutoPilot,
+  markAutoPilotRetry,
   recordMove,
+  registerFailure,
+  resetFailure,
+  shouldRetryAutoPilot,
+  unmarkAutoPilot,
 } from '../src/engine/game.js';
 import { fallbackMove, sanityCheck } from '../src/services/llmDecision.js';
-import { futureMaxGain } from '../src/engine/fillPlan.js';
+import {
+  countFreedAfterMove,
+  findCampBlockedForeigners,
+  findUnblockMove,
+  futureMaxGain,
+  isUnblockMove,
+} from '../src/engine/fillPlan.js';
 import {
   buildPrompt,
   buildCandidateList,
@@ -46,7 +58,15 @@ import {
   phaseStrategyHint,
   targetDirectionHint,
 } from '../src/services/promptBuilder.js';
-import { COLOR_TARGET, PIECES_PER_COLOR, SEAT_COLORS, THINKING_TO_EFFORT } from '../src/constants.js';
+import {
+  AUTO_PILOT_FAIL_THRESHOLD,
+  AUTO_PILOT_RETRY_INTERVAL_PLIES,
+  COLOR_TARGET,
+  PIECES_PER_COLOR,
+  SEAT_COLORS,
+  STALL_WITHOUT_PROGRESS_PLIES,
+  THINKING_TO_EFFORT,
+} from '../src/constants.js';
 
 let passed = 0;
 let failed = 0;
@@ -700,7 +720,9 @@ test('fallbackMove 不选负收益连跳（存在正收益走法时）', () => {
   const isBadJump = decision.path[0] === '6,-4,-2' && decision.path.length > 2;
   assert.ok(!isBadJump, `不应选择反方向的负收益连跳: ${decision.path.join('->')}`);
   // 落点应相对起点更接近目标营地（推进收益 ≥ 0）
-  assert.ok(decision.gain ?? 0 >= 0, '不应选择负收益走法');
+  // 注意括号：`??` 优先级低于 `>=`，写成 `decision.gain ?? 0 >= 0` 会解析为
+  // `decision.gain ?? (0 >= 0)` 而恒真，使本断言失效。
+  assert.ok((decision.gain ?? 0) >= 0, '不应选择负收益走法');
 });
 
 test('候选清单按推进收益降序排列（收益最大排最前，已就位勿动排最后）', () => {
@@ -759,6 +781,360 @@ test('铺路前瞻：当前收益小但能为下回合创造大收益的走法�
     decision.path,
     ['0,0,0', '1,-1,0'],
     '应选择铺路走法（当前收益小但下回合收益大），而非其它同收益单步',
+  );
+});
+
+console.log('\n=== 12. 多人数模式（2/4/6 人） ===');
+
+import { MODE_SEAT_COLORS } from '../src/constants.js';
+
+function newStateFor(colors) {
+  return createGameState({
+    roomId: 'test-room',
+    seats: colors.map((color, i) => ({ type: 'ai', color, aiPlayerId: `ai-${i}`, name: `AI-${i}`, model: 'm', modelConfigId: 'c' })),
+  });
+}
+
+test('6 色营地几何：HOME/TARGET 各 6 组×10 格，home 互不重叠且 target 为对角', () => {
+  const colors = ['red', 'green', 'blue', 'yellow', 'purple', 'orange'];
+  const seenHome = new Set();
+  for (const color of colors) {
+    assert.equal(HOME_CELLS[color].length, 10, `${color} home 10 格`);
+    assert.equal(TARGET_CELLS[color].length, 10, `${color} target 10 格`);
+    for (const cell of HOME_CELLS[color]) {
+      assert.ok(!seenHome.has(cell), `home 格 ${cell} 重复`);
+      seenHome.add(cell);
+    }
+  }
+  assert.equal(seenHome.size, 60, '六角共 60 个营地格');
+  // target 为 home 的对角：red target = yellow home（yellow home 在 POS_Q）
+  assert.deepEqual([...TARGET_CELLS.red].sort(), [...HOME_CELLS.yellow].sort());
+});
+
+test('2 人局：红黄对角布局（各 10 子，其余角落为空）', () => {
+  const state = newStateFor(MODE_SEAT_COLORS[2]);
+  assert.equal(state.seatCount, 2);
+  assert.deepEqual(state.players.map((p) => p.color), ['red', 'yellow']);
+  const pieceCount = Object.values(state.board).filter((v) => v != null).length;
+  assert.equal(pieceCount, 20, '2 人局共 20 子');
+  for (const cell of HOME_CELLS.red) assert.equal(state.board[cell], 'red');
+  for (const cell of HOME_CELLS.yellow) assert.equal(state.board[cell], 'yellow');
+  // 未参战角落必须为空
+  for (const cell of [...HOME_CELLS.green, ...HOME_CELLS.blue]) {
+    assert.equal(state.board[cell], null, `非参战角 ${cell} 应为空`);
+  }
+  // red 的 target 是 yellow 的 home（POS_Q 对角局）
+  assert.equal(countInTarget(state.board, 'red'), 0);
+});
+
+test('4 人局：两组对角、座位交替，未用角为空', () => {
+  const colors = MODE_SEAT_COLORS[4];
+  const state = newStateFor(colors);
+  assert.equal(Object.values(state.board).filter((v) => v != null).length, 40);
+  for (const color of colors) {
+    for (const cell of HOME_CELLS[color]) assert.equal(state.board[cell], color, `${color} home 已填`);
+  }
+  // 未参战颜色 green/orange 的角落为空
+  for (const cell of [...HOME_CELLS.green, ...HOME_CELLS.orange]) {
+    assert.equal(state.board[cell], null);
+  }
+  // 回合一圈回到原座位
+  advanceTurn(state);
+  advanceTurn(state);
+  advanceTurn(state);
+  advanceTurn(state);
+  assert.equal(state.turnSeat, 0, '4 人回合轮转一圈');
+});
+
+test('6 人局：全角落座，回合轮转遍历全部座位', () => {
+  const colors = MODE_SEAT_COLORS[6];
+  const state = newStateFor(colors);
+  assert.equal(state.seatCount, 6);
+  assert.equal(Object.values(state.board).filter((v) => v != null).length, 60);
+  const visited = new Set([state.turnSeat]);
+  for (let i = 0; i < 6; i += 1) visited.add(advanceTurn(state));
+  assert.equal(visited.size, 6, '6 个座位都被轮到');
+  assert.equal(state.turnSeat, 0);
+});
+
+test('2 人局兜底整局收敛：双方向对角推进直至全部入营', () => {
+  const state = newStateFor(MODE_SEAT_COLORS[2]);
+  let finished = false;
+  let guard = 0;
+  for (; guard < 6000; guard += 1) {
+    if (state.status === 'finished') {
+      finished = true;
+      break;
+    }
+    const seat = state.turnSeat;
+    const player = state.players[seat];
+    if (player.finishTime != null) {
+      advanceTurn(state);
+      continue;
+    }
+    if (!colorHasAnyLegalMove(state.board, player.color)) {
+      // 该座位无合法走法 → 记一条空跳过并轮转（与调度器 skipTurn 语义一致）
+      advanceTurn(state);
+      continue;
+    }
+    const decision = fallbackMove(state, seat, 'test', '兜底');
+    if (!decision.path) {
+      advanceTurn(state);
+      continue;
+    }
+    state.board = applyMove(state.board, decision.path);
+    recordMove(state, seat, decision.path, true);
+    const progress = evaluateProgress(state);
+    if (!progress.finished) advanceTurn(state);
+  }
+  assert.ok(finished, `2 人局应在上限内完成（guard=${guard}, 手数=${state.history.length}）`);
+  assert.equal(state.endReason, 'all_finished');
+  assert.ok(state.scores.length === 2 && state.scores[0].rank === 1);
+});
+
+/**
+ * 用兜底算法跑完整局，并返回「连续无入营」的最大间隔。
+ * maxGap 用于校验 stall 阈值不会被正常对局触及（阈值过小会把正常对局误杀）。
+ * @param {readonly string[]} colors
+ * @param {number} [maxGuard]
+ */
+function runFallbackGame(colors, maxGuard = 6000) {
+  const state = newStateFor(colors);
+  let guard = 0;
+  let lastProgressPly = 0;
+  let maxGap = 0;
+  let prevTotal = 0;
+  for (; guard < maxGuard; guard += 1) {
+    if (state.status === 'finished') break;
+    const seat = state.turnSeat;
+    const player = state.players[seat];
+    if (player.finishTime != null) {
+      advanceTurn(state);
+      continue;
+    }
+    if (!colorHasAnyLegalMove(state.board, player.color)) {
+      advanceTurn(state);
+      continue;
+    }
+    const decision = fallbackMove(state, seat, 'test', '兜底');
+    if (!decision.path) {
+      advanceTurn(state);
+      continue;
+    }
+    state.board = applyMove(state.board, decision.path);
+    recordMove(state, seat, decision.path, true);
+    const finished = evaluateProgress(state).finished;
+    const total = state.players.reduce((s, p) => s + p.inTarget, 0);
+    if (total > prevTotal) {
+      maxGap = Math.max(maxGap, state.history.length - lastProgressPly);
+      lastProgressPly = state.history.length;
+      prevTotal = total;
+    }
+    if (!finished) advanceTurn(state);
+  }
+  return { state, guard, maxGap };
+}
+
+test('4 人局兜底整局收敛，且不触及 stall 阈值', () => {
+  const { state, guard, maxGap } = runFallbackGame(MODE_SEAT_COLORS[4]);
+  assert.equal(
+    state.status,
+    'finished',
+    `4 人局应在上限内完成（guard=${guard}, 手数=${state.history.length}）`,
+  );
+  assert.equal(state.endReason, 'all_finished', `不应被误杀（实际 ${state.endReason}）`);
+  assert.equal(state.scores.length, 4);
+  assert.ok(
+    maxGap < STALL_WITHOUT_PROGRESS_PLIES,
+    `正常对局最大无入营间隔 ${maxGap} 手必须小于阈值 ${STALL_WITHOUT_PROGRESS_PLIES} 手`,
+  );
+});
+
+test('6 人局兜底整局收敛：不会被无进展停滞误杀（回归）', () => {
+  // 回归用例：6 人局 60 子，开局约需 48 手才有第一枚棋子入营。
+  // 曾因 STALL_WITHOUT_PROGRESS_PLIES=40，导致每局都在第 40 手被 stall 终局
+  // 且全部 0 子入营。含次优走法时实测"连续无入营"上界约 71 手，故阈值须留裕度。
+  const { state, guard, maxGap } = runFallbackGame(MODE_SEAT_COLORS[6]);
+  assert.equal(
+    state.status,
+    'finished',
+    `6 人局应在上限内完成（guard=${guard}, 手数=${state.history.length}）`,
+  );
+  assert.equal(state.endReason, 'all_finished', `不应被 stall 误杀（实际 ${state.endReason}）`);
+  assert.equal(state.scores.length, 6);
+  for (const p of state.players) {
+    assert.equal(p.inTarget, PIECES_PER_COLOR, `座位 ${p.seat}(${p.color}) 应全部入营`);
+  }
+  assert.ok(
+    maxGap < STALL_WITHOUT_PROGRESS_PLIES,
+    `正常对局最大无入营间隔 ${maxGap} 手必须小于阈值 ${STALL_WITHOUT_PROGRESS_PLIES} 手`,
+  );
+});
+
+test('createGameState 拒绝非法颜色、重复颜色与不支持的人数', () => {
+  // 非法色：曾导致 [...TARGET_CELLS[color]] 抛 TypeError（500 且无有效信息）
+  assert.throws(
+    () =>
+      createGameState({
+        roomId: 'r',
+        seats: [{ type: 'ai', color: 'gold' }, { type: 'ai', color: 'blue' }],
+      }),
+    /颜色非法/,
+  );
+  // 同色：两个座位共控同 10 子，countInTarget 与胜负判定完全串台
+  assert.throws(
+    () =>
+      createGameState({
+        roomId: 'r',
+        seats: [{ type: 'ai', color: 'red' }, { type: 'ai', color: 'red' }],
+      }),
+    /颜色重复/,
+  );
+  // 5 人不在 PLAYER_COUNTS(2/3/4/6) 内，必须拒绝而非静默接受
+  assert.throws(
+    () =>
+      createGameState({
+        roomId: 'r',
+        seats: [1, 2, 3, 4, 5].map((i) => ({ type: 'ai', aiPlayerId: `a${i}` })),
+      }),
+    /座位数必须是/,
+  );
+});
+
+test('托管恢复：连续失败进入托管 → 每 N 手重试一次 → 成功移出托管', () => {
+  const state = newWatchState();
+  const seat = 0;
+  let res = null;
+  for (let i = 0; i < AUTO_PILOT_FAIL_THRESHOLD; i += 1) res = registerFailure(state, seat);
+  assert.equal(res.autoPilot, true, '连续 3 次失败应进入托管');
+  assert.ok(isAutoPilot(state, seat));
+  assert.equal(shouldRetryAutoPilot(state, seat), false, '刚进入托管不应立即重试');
+  // 推进 N-1 手仍不重试，第 N 手允许
+  for (let i = 0; i < AUTO_PILOT_RETRY_INTERVAL_PLIES - 1; i += 1) recordMove(state, 1, ['a', 'b']);
+  assert.equal(shouldRetryAutoPilot(state, seat), false, '不足 N 手不重试');
+  recordMove(state, 1, ['a', 'b']);
+  assert.equal(shouldRetryAutoPilot(state, seat), true, '满 N 手允许重试');
+  markAutoPilotRetry(state, seat);
+  assert.equal(shouldRetryAutoPilot(state, seat), false, '重试后重新计时（失败也不会每手打 LLM）');
+  // 重试成功 → 移出托管并清零失败计数；对未托管座位是空操作
+  unmarkAutoPilot(state, seat);
+  assert.ok(!isAutoPilot(state, seat), '恢复成功应移出托管');
+  assert.equal(state.failCounts[seat] ?? 0, 0, '恢复成功应清零连续失败计数');
+  resetFailure(state, seat);
+  unmarkAutoPilot(state, seat);
+  assert.ok(!isAutoPilot(state, seat));
+});
+
+test('让位：外族棋子被困于我方目标营地 → 检测/解困/兜底让位/sanity 豁免', () => {
+  // 2 人局几何：yellow 的目标营地 = red 的出发营地（对角）。
+  // 构造"满营困子"：营地 10 格 = 己方 9 枚 + 对方 1 枚困在顶点（无任何出口）。
+  const buildApex = (cells) =>
+    cells.reduce((a, b) => (cubeDistance(b, '0,0,0') > cubeDistance(a, '0,0,0') ? b : a));
+  const yellowCamp = CORNER_CELLS[COLOR_TARGET.yellow];
+  const yellowApex = buildApex(yellowCamp);
+  const redCamp = CORNER_CELLS[COLOR_TARGET.red];
+  const redApex = buildApex(redCamp);
+  const board = createEmptyBoard();
+  for (const c of yellowCamp) board[c] = c === yellowApex ? 'red' : 'yellow';
+  for (const c of redCamp) board[c] = c === redApex ? 'yellow' : 'red';
+
+  // ① 被困检测：双方各有一枚对方棋子被困在自己目标营地的顶点
+  assert.deepEqual(findCampBlockedForeigners(board, 'yellow'), [yellowApex]);
+  assert.deepEqual(findCampBlockedForeigners(board, 'red'), [redApex]);
+
+  // ② 让位选路：走一步即可让对方顶点棋子恢复脱困能力
+  const blocked = findCampBlockedForeigners(board, 'yellow');
+  const unblock = findUnblockMove(board, 'yellow', blocked);
+  assert.ok(unblock, '应存在让位走法');
+  assert.ok(countFreedAfterMove(board, 'yellow', unblock.path, blocked) >= 1);
+  assert.ok(isUnblockMove(board, 'yellow', unblock.path));
+
+  // ③ 兜底走让位分支（seat1 = yellow）
+  const state = createGameState({
+    roomId: 'test-unblock',
+    seats: [
+      { type: 'ai', aiPlayerId: 'a0', name: 'R', model: 'm', modelConfigId: 'c' },
+      { type: 'ai', aiPlayerId: 'a1', name: 'Y', model: 'm', modelConfigId: 'c' },
+    ],
+  });
+  state.board = board;
+  const decision = fallbackMove(state, 1, 'm', 'test');
+  assert.ok(decision.path, '让位分支应产出走法');
+  assert.ok(countFreedAfterMove(board, 'yellow', decision.path, blocked) >= 1, '兜底应选择让位走法');
+  assert.ok(String(decision.log.reason).includes('让位'));
+
+  // ④ sanity 豁免：让位走法放行，非让位的已就位走法仍拒绝
+  const campMoves = [];
+  for (const c of yellowCamp) {
+    if (board[c] === 'yellow') campMoves.push(...getLegalMoves(board, c));
+  }
+  const freeing = campMoves.find((p) => countFreedAfterMove(board, 'yellow', p, blocked) > 0);
+  const nonFreeing = campMoves.find((p) => countFreedAfterMove(board, 'yellow', p, blocked) === 0);
+  assert.ok(freeing && nonFreeing, '场景应同时包含让位与非让位的营地走法');
+  assert.equal(sanityCheck(state, 1, freeing).ok, true);
+  assert.equal(sanityCheck(state, 1, nonFreeing).ok, false);
+});
+
+test('无进展停滞：连续 STALL_WITHOUT_PROGRESS_PLIES 手无棋子入营 → 以 stall 终局（不再拖到手数上限）', () => {
+  const state = createGameState({
+    roomId: 'test-stall',
+    seats: [
+      { type: 'ai', aiPlayerId: 'a0', name: 'R', model: 'm', modelConfigId: 'c' },
+      { type: 'ai', aiPlayerId: 'a1', name: 'Y', model: 'm', modelConfigId: 'c' },
+    ],
+  });
+  // 放一枚红子入营：第一手产生进展，此后再无任何入营
+  state.board[TARGET_CELLS.red[0]] = 'red';
+  recordMove(state, 0, ['a', 'b']);
+  assert.equal(evaluateProgress(state).finished, false, '刚有进展不应终局');
+  let finished = false;
+  for (let guard = 0; guard < STALL_WITHOUT_PROGRESS_PLIES + 5 && !finished; guard += 1) {
+    recordMove(state, 1, ['c', 'd']);
+    finished = evaluateProgress(state).finished;
+  }
+  assert.ok(finished, '应在停滞上限内终局');
+  assert.equal(state.endReason, 'stall');
+  assert.ok(
+    state.history.length <= STALL_WITHOUT_PROGRESS_PLIES + 2,
+    `不应拖到手数上限（实际 ${state.history.length} 手）`,
+  );
+});
+
+test('让位 prompt：候选标注"让位"置顶 + 硬约束条件放宽（开局不误报）', () => {
+  const mkSeats = () => [
+    { type: 'ai', aiPlayerId: 'a0', name: 'R', model: 'm', modelConfigId: 'c' },
+    { type: 'ai', aiPlayerId: 'a1', name: 'Y', model: 'm', modelConfigId: 'c' },
+  ];
+  const apex = (cells) =>
+    cells.reduce((a, b) => (cubeDistance(b, '0,0,0') > cubeDistance(a, '0,0,0') ? b : a));
+  const yellowCamp = CORNER_CELLS[COLOR_TARGET.yellow];
+
+  // 满营困子场景：yellow 目标营地 9 黄 + 红 1（困在顶点）
+  const yApex = apex(yellowCamp);
+  const board = createEmptyBoard();
+  for (const c of yellowCamp) board[c] = c === yApex ? 'red' : 'yellow';
+  const rApex = apex(CORNER_CELLS[COLOR_TARGET.red]);
+  for (const c of CORNER_CELLS[COLOR_TARGET.red]) board[c] = c === rApex ? 'yellow' : 'red';
+  const state = createGameState({ roomId: 'test-unblock-prompt', seats: mkSeats() });
+  state.board = board;
+
+  // 候选清单：让位走法置顶并带"让位"标注
+  const { text } = buildCandidateList(board, 'yellow');
+  const firstLine = text.slice(0, text.indexOf('\n'));
+  assert.ok(firstLine.includes('让位'), `首条候选应为让位走法：${firstLine}`);
+
+  // prompt：让位场景下硬约束被替换为让位指引
+  const { messages } = buildPrompt(state, 1, {});
+  const userMsg = messages[1].content;
+  assert.ok(userMsg.includes('让位'), 'user 消息应包含让位指引');
+  assert.ok(!userMsg.includes('已进入目标营地的棋子不得离开营地'), '原营地约束应被替换');
+
+  // 开局初始棋盘（营地被对方满员占据但其队友可自解）不触发让位口径
+  const normal = createGameState({ roomId: 'test-normal-prompt', seats: mkSeats() });
+  const normalPrompt = buildPrompt(normal, 1, {});
+  assert.ok(
+    normalPrompt.messages[1].content.includes('已进入目标营地的棋子不得离开营地'),
+    '无困子时应维持原硬约束',
   );
 });
 

@@ -1,5 +1,14 @@
 import assert from 'node:assert/strict';
-import store from '../src/store.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+// 在动态 import store 之前设置临时数据目录：config.js 在模块加载时读取 DATA_DIR。
+// 避免测试直接读写 server/data 下的真实数据文件（测试中途崩溃会残留脏数据）。
+const tempDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-draughts-store-test-'));
+process.env.DATA_DIR = tempDataDir;
+
+const { default: store } = await import('../src/store.js');
 
 async function testStore() {
   console.log('=== 测试 Store 内存缓存与持久化 ===');
@@ -68,7 +77,13 @@ async function testStore() {
   console.log('=== Store 全部测试通过 ===');
 }
 
-testStore().catch((err) => {
+try {
+  await testStore();
+} catch (err) {
   console.error('Store 测试失败:', err);
   process.exit(1);
-});
+} finally {
+  // 所有写操作均在串行队列内完成刷盘，此处可安全清理临时目录。
+  // Windows 下文件句柄可能延迟释放，失败时忽略（留给系统临时目录自动回收）。
+  await fs.promises.rm(tempDataDir, { recursive: true, force: true }).catch(() => {});
+}

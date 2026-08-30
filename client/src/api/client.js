@@ -95,3 +95,15 @@ export const getLegalMoves = (roomId) => request('GET', `/rooms/${roomId}/legal-
 
 // ---- 历史 ----
 export const getHistory = () => request('GET', '/history');
+/** 单局详情（完整棋谱 history + 每座位决策质量 stats）。 */
+export const getHistoryGame = (id) => request('GET', `/history/${id}`);
+/** 棋谱文本导出下载地址（GET 直链，浏览器下载）。 */
+export const historyExportUrl = (id) => `${API_BASE}/api/history/${id}/export`;
+
+// ---- 锦标赛 ----
+export const listTournaments = () => request('GET', '/tournaments');
+export const createTournament = (body) => request('POST', '/tournaments', body);
+export const getTournament = (id) => request('GET', `/tournaments/${id}`);
+export const startTournament = (id) => request('POST', `/tournaments/${id}/start`);
+export const abortTournament = (id) => request('POST', `/tournaments/${id}/abort`);
+export const deleteTournament = (id) => request('DELETE', `/tournaments/${id}`);

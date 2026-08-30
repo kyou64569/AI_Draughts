@@ -1,5 +1,5 @@
 import { Box, Typography, Chip, LinearProgress } from '@mui/material';
-import { COLOR_DEEP, COLOR_FILL, COLOR_LABELS, colorLabel } from '../../utils/colors.js';
+import { COLOR_DEEP, COLOR_FILL, COLOR_LABELS, colorLabel, PIECES_PER_COLOR } from '../../utils/colors.js';
 
 /**
  * 座位 / 玩家信息卡（2026-08 重构）。
@@ -13,7 +13,7 @@ export default function SeatInfoCard({ player, isCurrentTurn, isAutoPilot }) {
   const typeLabel = player.kind === 'human' ? '人类' : `AI · ${player.name || '未命名'}`;
   const modelLabel = player.kind === 'ai' && player.model ? ` · ${player.model}` : '';
   const inTarget = player.inTarget ?? 0;
-  const progress = Math.round((inTarget / 10) * 100);
+  const progress = Math.round((inTarget / PIECES_PER_COLOR) * 100);
 
   return (
     <Box
@@ -89,7 +89,7 @@ export default function SeatInfoCard({ player, isCurrentTurn, isAutoPilot }) {
             }}
           />
           <Typography variant="caption" fontWeight={700} sx={{ minWidth: 44, textAlign: 'right' }}>
-            {inTarget} / 10
+            {inTarget} / {PIECES_PER_COLOR}
           </Typography>
         </Box>
 

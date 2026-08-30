@@ -5,21 +5,25 @@
 import { randomUUID } from 'node:crypto';
 
 import {
+  ALL_COLORS,
   BASE_SCORE_PER_PIECE,
   COLOR_HOME,
   COLOR_TARGET,
   GAME_STATUS_FINISHED,
   GAME_STATUS_PLAYING,
   MAX_GAME_PLIES,
+  MODE_SEAT_COLORS,
   PIECES_PER_COLOR,
+  PLAYER_COUNTS,
   RANK_BONUS,
   SEAT_COLORS,
-  SEAT_COUNT,
   SEAT_TYPE_AI,
   SEAT_TYPE_HUMAN,
   TIME_PENALTY_PER_UNIT,
   TIME_PENALTY_UNIT_SEC,
   AUTO_PILOT_FAIL_THRESHOLD,
+  AUTO_PILOT_RETRY_INTERVAL_PLIES,
+  STALL_WITHOUT_PROGRESS_PLIES,
 } from '../constants.js';
 import { HOME_CELLS, TARGET_CELLS, createEmptyBoard } from './board.js';
 import { countInTarget, seatHasAnyLegalMove } from './rules.js';
@@ -35,12 +39,13 @@ import { countInTarget, seatHasAnyLegalMove } from './rules.js';
 const PUBLIC_LOG_WINDOW = 20;
 
 /**
- * 生成初始棋盘：三色各 10 子填满各自 home 角，其余 91 格为 null。
+ * 生成初始棋盘：活跃颜色各 10 子填满各自 home 角，其余格为 null。
+ * @param {string[]} colors 本局活跃颜色（2/3/4/6 人局分别 2/3/4/6 色）
  * @returns {Record<string, string|null>} 全 121 键棋盘
  */
-export function createInitialBoard() {
+export function createInitialBoard(colors = SEAT_COLORS) {
   const board = createEmptyBoard();
-  for (const color of SEAT_COLORS) {
+  for (const color of colors) {
     for (const cell of HOME_CELLS[color]) board[cell] = color;
   }
   return board;
@@ -56,17 +61,35 @@ export function createInitialBoard() {
  */
 
 /**
- * 创建 GameState。座位→颜色固定：seat0=red、seat1=green、seat2=blue。
+ * 创建 GameState。座位→颜色：优先 seat.color，缺省按 MODE_SEAT_COLORS[seatCount]
+ * （2/3/4/6 人局；3 人局即红绿蓝，与旧数据完全兼容）。
  * @param {{roomId: string, seats: SeatMeta[]}} opts
  * @returns {object} GameState
  */
 export function createGameState({ roomId, seats }) {
-  if (!Array.isArray(seats) || seats.length !== SEAT_COUNT) {
-    throw new Error(`createGameState: 需要 ${SEAT_COUNT} 个座位`);
+  if (!Array.isArray(seats) || !PLAYER_COUNTS.includes(seats.length)) {
+    throw new Error(`createGameState: 座位数必须是 ${PLAYER_COUNTS.join(' | ')} 人`);
+  }
+  const seatCount = seats.length;
+  const seatColors = MODE_SEAT_COLORS[seatCount];
+  // 颜色必须逐个校验后再使用：
+  //  - 非法色 → COLOR_HOME/TARGET_CELLS[color] 为 undefined，进而在下方
+  //    [...TARGET_CELLS[color]] 处抛 TypeError，表现为 500 且无有效信息；
+  //  - 颜色重复 → 两个座位共控同 10 子，countInTarget / 胜负判定完全串台。
+  // 两者都必须在建局时 fail-fast，绝不能让脏状态流进对局。
+  const colors = seats.map((seat, index) => {
+    const color = seat.color ?? seatColors[index];
+    if (!ALL_COLORS.includes(color)) {
+      throw new Error(`createGameState: 座位 #${index} 的颜色非法: ${String(seat.color)}`);
+    }
+    return color;
+  });
+  if (new Set(colors).size !== colors.length) {
+    throw new Error(`createGameState: 座位颜色重复: ${colors.join(', ')}`);
   }
   const startedAtMs = Date.now();
   const players = seats.map((seat, index) => {
-    const color = SEAT_COLORS[index];
+    const color = colors[index];
     return {
       seat: index,
       color,
@@ -89,7 +112,8 @@ export function createGameState({ roomId, seats }) {
   const state = {
     id: randomUUID(),
     roomId,
-    board: createInitialBoard(),
+    seatCount,
+    board: createInitialBoard(players.map((p) => p.color)),
     turnSeat: 0,
     players,
     history: [],
@@ -99,7 +123,10 @@ export function createGameState({ roomId, seats }) {
     startedAtMs,
     finishedAt: null,
     autoPilotSeats: [],
-    failCounts: { 0: 0, 1: 0, 2: 0 },
+    // 无进展停滞检测（evaluateProgress 维护）：最近一次"入营总数创新高"的手数与水位
+    lastProgressPly: 0,
+    lastProgressTotal: 0,
+    failCounts: Object.fromEntries(players.map((p) => [p.seat, 0])),
     status: GAME_STATUS_PLAYING,
   };
   refreshProgress(state);
@@ -116,13 +143,14 @@ export function currentPlayer(state) {
 }
 
 /**
- * 回合流转：0→1→2→0，跳过已完成（finishTime != null）的玩家。
+ * 回合流转：0→1→…→n-1→0，跳过已完成（finishTime != null）的玩家。
  * @param {object} state
  * @returns {number} 新的 turnSeat
  */
 export function advanceTurn(state) {
-  for (let i = 1; i <= SEAT_COUNT; i += 1) {
-    const cand = (state.turnSeat + i) % SEAT_COUNT;
+  const n = state.players.length;
+  for (let i = 1; i <= n; i += 1) {
+    const cand = (state.turnSeat + i) % n;
     if (state.players[cand].finishTime == null) {
       state.turnSeat = cand;
       return cand;
@@ -167,12 +195,13 @@ export function recordMove(state, seat, path, isFallback = false) {
 /**
  * 追加一条决策日志（AI 思考/理由，或系统提示）。
  * @param {object} state
- * @param {object} entry LogEntry（缺省字段会被补齐）
+ * @param {object} entry LogEntry（缺省字段会被补齐；latencyMs/usage/failures 为可选结构化统计字段）
  * @returns {object} 落库后的 LogEntry
  */
 export function pushLog(state, entry) {
   const seat = entry.seat;
-  const player = seat != null && seat >= 0 && seat < SEAT_COUNT ? state.players[seat] : null;
+  const player =
+    seat != null && seat >= 0 && seat < state.players.length ? state.players[seat] : null;
   /** @type {object} */
   const log = {
     seat: entry.seat ?? null,
@@ -185,6 +214,10 @@ export function pushLog(state, entry) {
     isFallback: Boolean(entry.isFallback),
     timestamp: entry.timestamp ?? new Date().toISOString(),
   };
+  // 结构化决策统计字段（可选）：决策延迟 / token 用量 / LLM 失败次数
+  if (entry.latencyMs != null) log.latencyMs = entry.latencyMs;
+  if (entry.usage != null) log.usage = entry.usage;
+  if (entry.failures != null) log.failures = entry.failures;
   state.logs.push(log);
   return log;
 }
@@ -200,7 +233,8 @@ export function isAutoPilot(state, seat) {
 }
 
 /**
- * 将座位标记为 auto-pilot（此后不再调用 LLM）。
+ * 将座位标记为 auto-pilot（默认不再调用 LLM；托管恢复见 shouldRetryAutoPilot）。
+ * 同时记录进入托管时的手数，作为"每 N 手重试一次"计时的起点。
  * @param {object} state
  * @param {number} seat
  * @returns {void}
@@ -208,6 +242,47 @@ export function isAutoPilot(state, seat) {
 export function markAutoPilot(state, seat) {
   if (!Array.isArray(state.autoPilotSeats)) state.autoPilotSeats = [];
   if (!state.autoPilotSeats.includes(String(seat))) state.autoPilotSeats.push(String(seat));
+  if (state.autoPilotRetryPly == null || typeof state.autoPilotRetryPly !== 'object') {
+    state.autoPilotRetryPly = {};
+  }
+  state.autoPilotRetryPly[seat] = state.history.length;
+}
+
+/**
+ * 将座位移出 auto-pilot（托管恢复成功时调用；未在托管中则为空操作）。
+ * @param {object} state
+ * @param {number} seat
+ * @returns {void}
+ */
+export function unmarkAutoPilot(state, seat) {
+  if (!Array.isArray(state.autoPilotSeats)) return;
+  const idx = state.autoPilotSeats.indexOf(String(seat));
+  if (idx >= 0) state.autoPilotSeats.splice(idx, 1);
+  resetFailure(state, seat);
+}
+
+/**
+ * 托管座位本手是否允许重试真实 LLM：距上次重试/进入托管已满 N 手。
+ * @param {object} state
+ * @param {number} seat
+ * @returns {boolean}
+ */
+export function shouldRetryAutoPilot(state, seat) {
+  const last = state.autoPilotRetryPly?.[seat];
+  return last == null || state.history.length - last >= AUTO_PILOT_RETRY_INTERVAL_PLIES;
+}
+
+/**
+ * 记录一次托管重试（无论成败，重置 N 手计时；防止重试失败后每手都打 LLM）。
+ * @param {object} state
+ * @param {number} seat
+ * @returns {void}
+ */
+export function markAutoPilotRetry(state, seat) {
+  if (state.autoPilotRetryPly == null || typeof state.autoPilotRetryPly !== 'object') {
+    state.autoPilotRetryPly = {};
+  }
+  state.autoPilotRetryPly[seat] = state.history.length;
 }
 
 /**
@@ -274,17 +349,39 @@ export function evaluateProgress(state) {
     .sort((a, b) => (a.finishRank ?? 0) - (b.finishRank ?? 0))
     .map((p) => p.seat);
 
-  // 终局条件：全部完成 / 剩余未完成者均无合法走法（死锁）/ 达到手数上限
+  // 无进展停滞（安全网）：全场入营总数创新高才算"进展"。连续
+  // STALL_WITHOUT_PROGRESS_PLIES 手无进展 → 强制终局。覆盖 deadlock
+  // 管不到的场景：被困一方仍能来回挪子（有合法走法），僵局会拖到手数上限。
+  const totalInTarget = state.players.reduce((s, p) => s + p.inTarget, 0);
+  // 进展 = 入场总数**增加**。只允许回落：让位（unblock）会主动把已入营的棋子
+  // 挪出营地为被困对手让路，但回落不应重置停滞计时器，否则可被滥用（反复挪出
+  // 挪入来重置计时器）。只有创新高才算进展。
+  if (totalInTarget > (state.lastProgressTotal ?? -1)) {
+    state.lastProgressTotal = totalInTarget;
+    state.lastProgressPly = state.history.length;
+  }
+  const stall =
+    unfinished.length > 0 &&
+    state.history.length - (state.lastProgressPly ?? 0) >= STALL_WITHOUT_PROGRESS_PLIES;
+
+  // 终局条件：全部完成 / 剩余未完成者均无合法走法（死锁）/ 无进展停滞 / 达到手数上限
   const deadlock =
     unfinished.length > 0 && unfinished.every((u) => !seatHasAnyLegalMove(state, u.p.seat));
   const plyLimitReached = state.history.length >= MAX_GAME_PLIES;
 
   if (
     state.status === GAME_STATUS_PLAYING &&
-    (unfinished.length === 0 || deadlock || plyLimitReached)
+    (unfinished.length === 0 || deadlock || stall || plyLimitReached)
   ) {
     endGame(state, ranks, unfinished);
-    state.endReason = unfinished.length === 0 ? 'all_finished' : deadlock ? 'deadlock' : 'ply_limit';
+    state.endReason =
+      unfinished.length === 0
+        ? 'all_finished'
+        : deadlock
+          ? 'deadlock'
+          : stall
+            ? 'stall'
+            : 'ply_limit';
     return { finished: true, newlyFinished, ranks };
   }
   return { finished: false, newlyFinished, ranks };
@@ -318,7 +415,7 @@ export function endGame(state, ranks, unfinished) {
   for (const p of state.players) {
     const inTarget = countInTarget(state.board, p.color);
     const base = inTarget * BASE_SCORE_PER_PIECE;
-    const rank = p.finishRank ?? SEAT_COUNT;
+    const rank = p.finishRank ?? state.players.length;
     const rankBonus = RANK_BONUS[rank] ?? 0;
     const score = Math.max(0, base + rankBonus - timePenalty);
     state.scores.push({
@@ -341,18 +438,22 @@ export function endGame(state, ranks, unfinished) {
 
 /**
  * 生成对外下发的 GameState（SSE `state` 事件 / REST 响应统一使用）。
- * 剔除内部字段 failCounts；board 为全 121 键。
+ * 剔除内部字段 failCounts / autoPilotRetryPly / lastProgress*；board 为全 121 键。
  * @param {object} state
  * @returns {object}
  */
 export function toPublicGameState(state) {
   if (state == null) return null;
-  const { failCounts, ...rest } = state;
+  const { failCounts, autoPilotRetryPly, lastProgressPly, lastProgressTotal, ...rest } = state;
   return {
     ...rest,
     board: { ...state.board },
-    players: state.players.map((p) => ({ ...p })),
-    history: state.history.map((m) => ({ ...m })),
+    // targetCells 必须连同 player 一起拷贝：仅 {...p} 时该数组仍与内部状态共享引用，
+    // 消费方改动会直接污染活局。
+    players: state.players.map((p) => ({ ...p, targetCells: [...p.targetCells] })),
+    // 决策文本（reason/thinking 等）只随 log 事件推送；state 广播保留轻量走法记录，
+    // 避免 payload 随对局手数线性膨胀（前端 lastMove 高亮只需 from/to/path）。
+    history: state.history.map(({ reason, thinking, ...m }) => ({ ...m })),
     logs: state.logs.slice(-PUBLIC_LOG_WINDOW).map((l) => ({ ...l })),
     scores: state.scores.map((sc) => ({ ...sc })),
     autoPilotSeats: [...(state.autoPilotSeats ?? [])],
@@ -369,6 +470,9 @@ export default {
   pushLog,
   isAutoPilot,
   markAutoPilot,
+  unmarkAutoPilot,
+  shouldRetryAutoPilot,
+  markAutoPilotRetry,
   registerFailure,
   resetFailure,
   evaluateProgress,

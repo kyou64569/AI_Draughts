@@ -12,6 +12,10 @@ import {
   ListItem,
   CircularProgress,
   Alert,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
 } from '@mui/material';
 import {
   fetchModels,
@@ -20,6 +24,13 @@ import {
   updateModelConfig,
 } from '../../api/client.js';
 import { useApp } from '../../context/AppContext.jsx';
+
+/** 提供方协议选项（与后端 LLM_PROVIDERS 一致）。 */
+const PROVIDER_OPTIONS = [
+  { value: 'openai', label: 'OpenAI 兼容', baseUrl: 'https://api.openai.com/v1', hint: '兼容 OpenAI/DeepSeek/通义/商汤等 OpenAI 格式接口，支持思考强度参数' },
+  { value: 'anthropic', label: 'Anthropic', baseUrl: 'https://api.anthropic.com', hint: 'Claude 系列官方 Messages API（api.anthropic.com），思考强度参数暂不透传' },
+  { value: 'gemini', label: 'Google Gemini', baseUrl: 'https://generativelanguage.googleapis.com', hint: 'Gemini 系列官方 API，思考强度参数暂不透传' },
+];
 
 /**
  * 新增/编辑模型配置表单（含 拉取模型 与 测试连通）。
@@ -33,7 +44,7 @@ import { useApp } from '../../context/AppContext.jsx';
 export default function ModelConfigForm({ open, onClose, initial, onSaved }) {
   const app = useApp();
   const isEdit = Boolean(initial?.id);
-  const [form, setForm] = useState({ name: '', baseUrl: '', apiKey: '' });
+  const [form, setForm] = useState({ name: '', provider: 'openai', baseUrl: '', apiKey: '' });
   const [saving, setSaving] = useState(false);
   const [models, setModels] = useState([]);
   const [modelsLoading, setModelsLoading] = useState(false);
@@ -43,6 +54,7 @@ export default function ModelConfigForm({ open, onClose, initial, onSaved }) {
     if (open) {
       setForm({
         name: initial?.name ?? '',
+        provider: initial?.provider ?? 'openai',
         baseUrl: initial?.baseUrl ?? '',
         apiKey: '', // 出于安全：编辑时不回显已有 key
       });
@@ -53,6 +65,8 @@ export default function ModelConfigForm({ open, onClose, initial, onSaved }) {
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
+  const activeProvider = PROVIDER_OPTIONS.find((p) => p.value === form.provider) ?? PROVIDER_OPTIONS[0];
+
   const handleSave = async () => {
     if (!form.name.trim() || !form.baseUrl.trim()) {
       app.error('名称与 Base URL 不能为空');
@@ -61,13 +75,14 @@ export default function ModelConfigForm({ open, onClose, initial, onSaved }) {
     setSaving(true);
     try {
       if (isEdit) {
-        const patch = { name: form.name.trim(), baseUrl: form.baseUrl.trim() };
+        const patch = { name: form.name.trim(), provider: form.provider, baseUrl: form.baseUrl.trim() };
         if (form.apiKey.trim() !== '') patch.apiKey = form.apiKey.trim();
         await updateModelConfig(initial.id, patch);
         app.success('模型配置已更新');
       } else {
         await createModelConfig({
           name: form.name.trim(),
+          provider: form.provider,
           baseUrl: form.baseUrl.trim(),
           apiKey: form.apiKey,
         });
@@ -124,11 +139,34 @@ export default function ModelConfigForm({ open, onClose, initial, onSaved }) {
           value={form.name}
           onChange={(e) => set('name', e.target.value)}
         />
+        <FormControl fullWidth margin="normal">
+          <InputLabel id="provider-label">协议类型</InputLabel>
+          <Select
+            labelId="provider-label"
+            label="协议类型"
+            value={form.provider}
+            onChange={(e) => {
+              const next = PROVIDER_OPTIONS.find((p) => p.value === e.target.value);
+              set('provider', e.target.value);
+              // 切换协议时，若 baseUrl 为空则自动填入该协议建议地址
+              if (next && !form.baseUrl.trim()) set('baseUrl', next.baseUrl);
+            }}
+          >
+            {PROVIDER_OPTIONS.map((p) => (
+              <MenuItem key={p.value} value={p.value}>
+                {p.label}
+              </MenuItem>
+            ))}
+          </Select>
+          <Box component="p" sx={{ mt: 0.5, mb: 0, typography: 'caption', color: 'text.secondary' }}>
+            {activeProvider.hint}
+          </Box>
+        </FormControl>
         <TextField
           label="Base URL"
           fullWidth
           margin="normal"
-          placeholder="https://api.openai.com/v1"
+          placeholder={activeProvider.baseUrl}
           value={form.baseUrl}
           onChange={(e) => set('baseUrl', e.target.value)}
         />
@@ -141,7 +179,9 @@ export default function ModelConfigForm({ open, onClose, initial, onSaved }) {
           value={form.apiKey}
           onChange={(e) => set('apiKey', e.target.value)}
           helperText={
-            isEdit ? '留空表示保留原值（出于安全不回显）' : '仅保存在服务端，前端不可见、不可见网络请求外泄'
+            isEdit
+              ? '留空表示保留原值（出于安全不回显）'
+              : '可选：本地服务（Ollama / LM Studio 等）可留空；仅保存在服务端，不随响应外泄'
           }
         />
 

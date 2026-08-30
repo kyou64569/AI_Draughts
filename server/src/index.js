@@ -14,6 +14,7 @@ import aiPlayersRouter from './routes/aiPlayers.js';
 import historyRouter from './routes/history.js';
 import modelConfigsRouter from './routes/modelConfigs.js';
 import roomsRouter from './routes/rooms.js';
+import tournamentsRouter from './routes/tournaments.js';
 import store from './store.js';
 import rateLimiter from './middleware/rateLimiter.js';
 import contentTypeValidator from './middleware/contentTypeValidator.js';
@@ -33,6 +34,10 @@ process.on('unhandledRejection', (reason) => {
  */
 export function createApp() {
   const app = express();
+
+  // 反向代理后部署时按 TRUST_PROXY（层数或 true）开启，使 req.ip/限流取真实客户端 IP；
+  // 直连部署保持关闭，防止伪造 X-Forwarded-For。
+  app.set('trust proxy', config.trustProxy);
 
   app.use(cors({ origin: config.corsOrigin, credentials: false }));
   app.use(express.json({ limit: '1mb' }));
@@ -76,6 +81,7 @@ export function createApp() {
   app.use('/api/ai-players', aiPlayersRouter);
   app.use('/api/rooms', roomsRouter);
   app.use('/api/history', historyRouter);
+  app.use('/api/tournaments', tournamentsRouter);
 
   /** 404 兜底。 */
   app.use((req, res) => {
@@ -97,9 +103,12 @@ export function createApp() {
       return;
     }
     console.error('[unhandled]', err);
-    // 500：返回真实错误信息（截断），便于前端/用户定位（如"写入 xxx 失败：文件被锁定"），
-    // 避免只看到泛化的"服务内部出错"无法排查。
-    const detail = String(err?.message ?? err ?? '未知错误').slice(0, 300);
+    // 500：开发环境返回真实错误信息（截断），便于前端/用户定位（如"写入 xxx 失败：文件被锁定"）；
+    // 生产环境只回通用文案，避免泄露文件路径/堆栈等内部结构，完整错误始终走上面的日志。
+    const isDev = process.env.NODE_ENV !== 'production';
+    const detail = isDev
+      ? String(err?.message ?? err ?? '未知错误').slice(0, 300)
+      : '服务内部错误，请稍后重试';
     sendErr(res, ERROR_CODES.INTERNAL, detail);
   });
 
@@ -114,15 +123,23 @@ export async function start() {
   await store.ensureDataDir();
   // 清理旧"tmp+rename"策略遗留的残留 .tmp（会成为文件锁诱因）
   await store.cleanupStaleTmp();
-  // 预热四个集合文件，保证首次请求前文件已存在。
+  // 预热五个集合文件，保证首次请求前文件已存在。
   await Promise.all([
     store.loadCollection('modelConfigs'),
     store.loadCollection('aiPlayers'),
     store.loadCollection('rooms'),
     store.loadCollection('games'),
+    store.loadCollection('tournaments'),
   ]);
   // 启动自愈：重启后"playing 但无内存对局"的孤儿房间标记回 setup，避免进入牌桌无对局。
   await store.repairOrphanRooms();
+  // 锦标赛自愈：running 锦标赛中断掉的场次回退 pending 并继续调度（非阻塞）。
+  const { resumeRunningTournaments } = await import('./services/tournament.js');
+  resumeRunningTournaments()
+    .then((n) => {
+      if (n > 0) console.log(`[ai-draughts] 锦标赛自愈：回退 ${n} 场中断场次并继续调度`);
+    })
+    .catch(() => {});
 
   const app = createApp();
   return new Promise((resolve) => {

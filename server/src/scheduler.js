@@ -52,6 +52,9 @@ export function broadcastState(state) {
  * @returns {Promise<void>}
  */
 export async function finalizeGame(state) {
+  // ELO 结算（建议 3.2）：在归档前计算，变动写入归档记录；失败不阻断终局。
+  const { applyEloForGame } = await import('./services/elo.js');
+  state.eloChanges = await applyEloForGame(state);
   // 先归档、后改房间状态：归档是唯一对局记录，若归档写失败会抛错（throwOnError），
   // 房间保持 playing → 服务重启后 repairOrphanRooms 会自愈回 setup 可重开；
   // 若先改 finished 再归档失败，会出现"房间已结束但归档丢失"的悬空状态。
@@ -73,6 +76,14 @@ export async function finalizeGame(state) {
     finishedAt: state.finishedAt,
     totalSeconds: state.totalSeconds ?? null,
   });
+
+  // 锦标赛推进（建议 2.3）：该对局若属于进行中锦标赛的场次，记录结果并自动开下一场。
+  // 动态 import 避免与 roomService/scheduler 的循环依赖；失败不影响终局流程。
+  const { notifyGameFinished } = await import('./services/tournament.js');
+  await notifyGameFinished(state).catch((err) =>
+    console.warn('[tournament] 推进失败（不影响终局）:', err?.message ?? err),
+  );
+
   // 清理 SSE 连接，防止内存泄漏
   sse.closeRoom(state.roomId);
 
@@ -98,10 +109,19 @@ export async function finalizeGame(state) {
 export async function commitMove(state, seat, path, options = {}) {
   const isFallback = Boolean(options.isFallback);
   state.board = applyMove(state.board, path);
-  recordMove(state, seat, path, isFallback);
+  const move = recordMove(state, seat, path, isFallback);
   const logEntry = options.log
     ? pushLog(state, { ...options.log, from: path[0], to: path[path.length - 1] })
     : null;
+  // 决策信息落到走法记录上（棋谱回放与质量统计只需 history 即可自洽）
+  if (logEntry) {
+    move.model = logEntry.model ?? null;
+    move.thinking = logEntry.thinking ?? '';
+    move.reason = logEntry.reason ?? '';
+    if (logEntry.latencyMs != null) move.latencyMs = logEntry.latencyMs;
+    if (logEntry.usage != null) move.usage = logEntry.usage;
+    if (logEntry.failures != null) move.failures = logEntry.failures;
+  }
 
   const progress = evaluateProgress(state);
   if (!progress.finished) advanceTurn(state);
@@ -190,8 +210,27 @@ async function runLoop(gameId) {
 
     /** @type {{path: string[]|null, skip?: boolean, log: object}} */
     let decision = null;
+    // 流式思考：片段缓冲 250ms 批量推送（thinking 事件），决策结束统一清空；
+    // 前端在收到 state/log 事件（走子落定）时自动清空思考文本。
+    let thinkBuf = '';
+    let thinkTimer = null;
+    const flushThinking = () => {
+      if (thinkBuf) {
+        sse.broadcast(state.roomId, SSE_EVENTS.THINKING, { seat, delta: thinkBuf });
+        thinkBuf = '';
+      }
+      if (thinkTimer) {
+        clearTimeout(thinkTimer);
+        thinkTimer = null;
+      }
+    };
+    const onThinking = ({ kind, text }) => {
+      if (kind !== 'thinking' || !text) return;
+      thinkBuf += text;
+      if (!thinkTimer) thinkTimer = setTimeout(flushThinking, 250);
+    };
     try {
-      decision = await decideMove(state, seat);
+      decision = await decideMove(state, seat, { onThinking });
     } catch (err) {
       decision = {
         path: null,
@@ -203,6 +242,8 @@ async function runLoop(gameId) {
           isFallback: true,
         },
       };
+    } finally {
+      flushThinking();
     }
 
     // 决策期间对局可能已被终止

@@ -2,10 +2,16 @@
  * Prompt 构建（P1-4）：把棋盘状态、上一手、目标营地与全部合法走法喂给 LLM，
  * 并严格约束输出为 JSON `{from:{q,r,s}, to:{q,r,s}, reason}`。
  */
-import { COLOR_LABELS, PIECES_PER_COLOR, SEAT_COLORS } from '../constants.js';
+import { ALL_COLORS, COLOR_LABELS, PIECES_PER_COLOR, PROMPT_STYLE_MAX } from '../constants.js';
 import { TARGET_APEX, TARGET_CELLS, parseKey } from '../engine/board.js';
 import { applyMove, countInTarget, getAllLegalMoves, isJump } from '../engine/rules.js';
-import { computeFillPlan, computeMoveGain, futureMaxGain } from '../engine/fillPlan.js';
+import {
+  computeFillPlan,
+  computeMoveGain,
+  countFreedAfterMove,
+  findCampBlockedForeigners,
+  futureMaxGain,
+} from '../engine/fillPlan.js';
 
 /** 候选走法清单的最大条数（防止 prompt 过长）。 */
 const MAX_CANDIDATES = 160;
@@ -14,19 +20,20 @@ const MAX_CANDIDATES = 160;
 const RECENT_OWN_MOVES = 3;
 
 /**
- * 序列化棋盘上"有子"的坐标，按颜色分组。
+ * 序列化棋盘上"有子"的坐标，按颜色分组（仅列出本局实际在场的颜色）。
  * @param {Record<string, string|null>} board
  * @returns {string}
  */
 export function serializeBoard(board) {
   /** @type {Record<string, string[]>} */
-  const grouped = { red: [], green: [], blue: [] };
+  const grouped = Object.fromEntries(ALL_COLORS.map((color) => [color, []]));
   for (const k of Object.keys(board)) {
     const c = board[k];
     if (c != null && grouped[c]) grouped[c].push(k);
   }
   const lines = [];
-  for (const color of SEAT_COLORS) {
+  for (const color of ALL_COLORS) {
+    if (grouped[color].length === 0) continue;
     grouped[color].sort();
     lines.push(`${color}(${COLOR_LABELS[color]}): ${grouped[color].join(' | ')}`);
   }
@@ -62,7 +69,10 @@ export function targetDirectionHint(color) {
 export function buildCandidateList(board, color) {
   const moves = getAllLegalMoves(board, color);
   const { settled } = computeFillPlan(board, color);
-  /** @type {Map<string, {path:string[], kind:string, gain:number, future:number, total:number, isSettled:boolean}>} */
+  // 让位场景：外族棋子困于我方目标营地时，把能解困的走法标注"让位"并置顶
+  //（此时"已就位勿动"约束临时放宽，与兜底/sanity 的豁免逻辑一致）
+  const blockedForeigners = findCampBlockedForeigners(board, color);
+  /** @type {Map<string, {path:string[], kind:string, gain:number, future:number, total:number, isSettled:boolean, freed?:number}>} */
   const uniq = new Map();
   for (const path of moves) {
     const from = path[0];
@@ -73,6 +83,13 @@ export function buildCandidateList(board, color) {
     // 同终点时保留跳数更多的描述（信息量更大）
     if (!existing || path.length > existing.path.length) {
       const isSettled = settled.has(from);
+      const freed =
+        blockedForeigners.length > 0 ? countFreedAfterMove(board, color, path, blockedForeigners) : 0;
+      if (freed > 0) {
+        // 让位走法置顶（分数远高于普通收益），引导 LLM 优先解困
+        uniq.set(id, { path, kind, gain: 0, future: 0, total: 10000 + freed, isSettled, freed });
+        continue;
+      }
       let gain = isSettled ? Number.NEGATIVE_INFINITY : 0;
       let future = 0;
       let total = Number.NEGATIVE_INFINITY;
@@ -90,6 +107,7 @@ export function buildCandidateList(board, color) {
   const shown = entries.slice(0, MAX_CANDIDATES);
   const text = shown
     .map(([id, v]) => {
+      if (v.freed > 0) return `${id} (${v.kind}, 让位:解困${v.freed}枚被困棋子)`;
       if (v.isSettled) return `${id} (${v.kind}, 已就位勿动)`;
       const futureNote = v.future > 0 ? `, 后续+${v.future}` : '';
       return `${id} (${v.kind}, 推进${v.gain >= 0 ? '+' : ''}${v.gain}${futureNote})`;
@@ -157,11 +175,19 @@ export function phaseStrategyHint(inTarget) {
  * 构建对话消息。
  * @param {object} state GameState
  * @param {number} seat 座位号
- * @param {{strict?: boolean}} [options] strict=true 时使用更严格的 system 提示（重试用）
+ * @param {{strict?: boolean, customPrompt?: string|null}} [options]
+ *   strict=true 时使用更严格的 system 提示（重试用）；
+ *   customPrompt 为 AI 玩家配置的自定义策略文本（注入 user 消息，不改写硬性约束）。
  * @returns {{messages: Array<{role:string, content:string}>, candidateCount: number}}
  */
 export function buildPrompt(state, seat, options = {}) {
   const strict = Boolean(options.strict);
+  // 自定义策略：仅注入风格性指导；截断到 PROMPT_STYLE_MAX（与 aiPlayers 路由校验
+  // 上限一致，此处是防御性兜底），硬性约束（防往返/冻结/清单内选路）始终以后文为准。
+  const customPrompt =
+    typeof options.customPrompt === 'string' && options.customPrompt.trim() !== ''
+      ? options.customPrompt.trim().slice(0, PROMPT_STYLE_MAX)
+      : '';
   const player = state.players[seat];
   const color = player.color;
   const targetCells = TARGET_CELLS[color];
@@ -172,8 +198,8 @@ export function buildPrompt(state, seat, options = {}) {
     '你是中国跳棋（六角星棋盘，立方坐标 q,r,s 且 q+r+s=0）的博弈 AI。',
     '只输出一个 JSON 对象，不要输出解释、Markdown 代码块或多余文字。',
     '格式：{"from":{"q":<int>,"r":<int>,"s":<int>},"to":{"q":<int>,"r":<int>,"s":<int>},"reason":"<不超过80字的中文理由>"}',
-    'from 必须是你自己颜色的棋子；to 必须是 from 经"一步单步"或"一条完整连跳"可达的空格。',
-    '连跳一旦开始必须跳到无子可跳为止，不可中途停留；单步与连跳是两种独立走法。',
+    'from 必须是你自己颜色的棋子；to 必须是 from 经"一步单步"或"连跳（一跳或多连跳均可）"可达的空格。',
+    '连跳可在任意可达落点停下（标准规则允许中途停留）；候选清单已列出全部合法终点，从中选择即可。',
     '你必须从"合法走法清单"中原样选择一条（from->to 必须在清单里）。',
     '输出体积控制：reason 尽量精简（60 字内），整体输出（JSON）务必简短，全文一般不超过约 300 字符，避免超出输出上限被截断。',
   ].join('\n');
@@ -207,7 +233,11 @@ export function buildPrompt(state, seat, options = {}) {
     '连跳通常推进更大，但**不要为了跳得多而绕路**——若某条连跳的推进收益低于可选单步，应选单步；推进为负（后退）的走法不应选择，除非确无更好选择。',
     '（括号内"后续+N"表示该步走完后、下回合本方可获得的最大潜在收益：当前收益小但能为下回合铺路（搭跳板/占位）的走法同样有价值。）',
     phaseStrategyHint(inTarget),
-    '【硬性约束】禁止立即走回你上一手的起点（原地往返）；已进入目标营地的棋子不得离开营地；标注"已就位勿动"的棋子不要移动。',
+    ...(customPrompt ? ['', `【玩家自定义策略】（风格指导，与硬性约束冲突时以硬性约束为准）:`, customPrompt] : []),
+    // 让位场景下放宽"不得离开营地"约束：只允许标注"让位"的走法临时移出
+    (findCampBlockedForeigners(state.board, color).length > 0
+      ? '【硬性约束】禁止立即走回你上一手的起点（原地往返）。注意：当前有对方棋子被困在你的目标营地内无法脱身——标准规则允许且应当把挡路的己方营地棋子临时移出为其让路（候选清单中标注"让位"的走法），待其脱困后下回合再移回；除此之外已入营棋子仍不得离开营地。'
+      : '【硬性约束】禁止立即走回你上一手的起点（原地往返）；已进入目标营地的棋子不得离开营地；标注"已就位勿动"的棋子不要移动。'),
     '请选择最优走法并给出简短理由，只输出 JSON。',
   ].join('\n');
 

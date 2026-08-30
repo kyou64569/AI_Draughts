@@ -1,10 +1,10 @@
+import { useState } from 'react';
 import { Box, FormControl, InputLabel, Select, MenuItem, Button, Stack, Chip, Typography, Divider } from '@mui/material';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import PersonIcon from '@mui/icons-material/Person';
 import { assignSeat, startRoom } from '../../api/client.js';
 import { useApp } from '../../context/AppContext.jsx';
 import { SEAT_COLORS, COLOR_LABELS, COLOR_DEEP, COLOR_FILL } from '../../utils/colors.js';
-
 /**
  * 房间座位指派面板：为每个 AI 座位下拉指派 AI 玩家；满员显示「开始对局」。
  * @param {object} room 装饰后房间（含 seats/status/isFull）
@@ -16,24 +16,32 @@ import { SEAT_COLORS, COLOR_LABELS, COLOR_DEEP, COLOR_FILL } from '../../utils/c
 export default function SeatPanel({ room, aiPlayers, onChanged, onStarted, onEnter }) {
   const app = useApp();
   const isSetup = room.status === 'setup';
+  const [starting, setStarting] = useState(false);
+  const [assigningSeat, setAssigningSeat] = useState(null);
 
   const handleAssign = async (seatIndex, aiPlayerId) => {
+    setAssigningSeat(seatIndex);
     try {
       await assignSeat(room.id, seatIndex, aiPlayerId || null);
       app.success('座位已更新');
       onChanged?.();
     } catch (e) {
       app.error(e.message || '指派失败');
+    } finally {
+      setAssigningSeat(null);
     }
   };
 
   const handleStart = async () => {
+    setStarting(true);
     try {
       await startRoom(room.id);
       app.success('对局已开始');
       onStarted?.();
     } catch (e) {
       app.error(e.message || '开赛失败');
+    } finally {
+      setStarting(false);
     }
   };
 
@@ -43,7 +51,7 @@ export default function SeatPanel({ room, aiPlayers, onChanged, onStarted, onEnt
     <Box>
       <Stack spacing={1.2}>
         {room.seats.map((seat) => {
-          const color = SEAT_COLORS[seat.index];
+          const color = seat.color ?? SEAT_COLORS[seat.index] ?? 'red';
           return (
             <Box key={seat.index} sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
               {/* 座位色点 + 编号 */}
@@ -78,7 +86,7 @@ export default function SeatPanel({ room, aiPlayers, onChanged, onStarted, onEnt
                     labelId={`seat-${room.id}-${seat.index}`}
                     label="指派 AI"
                     value={seat.aiPlayerId ?? ''}
-                    disabled={!isSetup}
+                    disabled={!isSetup || assigningSeat === seat.index}
                     onChange={(e) => handleAssign(seat.index, e.target.value)}
                   >
                     <MenuItem value="">
@@ -111,8 +119,9 @@ export default function SeatPanel({ room, aiPlayers, onChanged, onStarted, onEnt
             color="success"
             startIcon={<PlayArrowIcon />}
             onClick={handleStart}
+            disabled={starting}
           >
-            开始对局
+            {starting ? '开赛中…' : '开始对局'}
           </Button>
         )}
         {room.status === 'setup' && !room.isFull && (

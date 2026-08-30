@@ -13,10 +13,14 @@ import {
   TableCell,
   Stack,
   Button,
+  IconButton,
+  Tooltip,
 } from '@mui/material';
 import EmojiEventsIcon from '@mui/icons-material/EmojiEvents';
 import HistoryIcon from '@mui/icons-material/History';
-import { getHistory } from '../api/client.js';
+import PlayCircleIcon from '@mui/icons-material/PlayCircle';
+import DownloadIcon from '@mui/icons-material/Download';
+import { getHistory, historyExportUrl } from '../api/client.js';
 import { useApp } from '../context/AppContext.jsx';
 import { COLOR_DEEP, COLOR_FILL, colorLabel } from '../utils/colors.js';
 
@@ -212,6 +216,7 @@ export default function HistoryPage() {
                   <TableCell align="right">手数</TableCell>
                   <TableCell align="right">时长</TableCell>
                   <TableCell>结束原因</TableCell>
+                  <TableCell align="right">操作</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -254,6 +259,28 @@ export default function HistoryPage() {
                     </TableCell>
                     <TableCell>
                       <Chip size="small" variant="outlined" label={g.endReasonLabel ?? g.endReason ?? '—'} />
+                    </TableCell>
+                    <TableCell align="right">
+                      <Stack direction="row" spacing={0.5} justifyContent="flex-end">
+                        {g.replayable && (
+                          <Button
+                            size="small"
+                            startIcon={<PlayCircleIcon />}
+                            onClick={() => navigate(`/history/${g.id}`)}
+                          >
+                            回放
+                          </Button>
+                        )}
+                        <Tooltip title="导出棋谱文本">
+                          <IconButton
+                            size="small"
+                            href={historyExportUrl(g.id)}
+                            aria-label="导出棋谱"
+                          >
+                            <DownloadIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
+                      </Stack>
                     </TableCell>
                   </TableRow>
                 ))}

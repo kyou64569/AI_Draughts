@@ -7,17 +7,47 @@
  * 2026-08-16 棋盘木质化升级：新增 WOOD 深胡桃木调色板，与棋子形成冷暖对比。
  */
 
-/** 座位序号 → 颜色（seat0=red、seat1=green、seat2=blue）。 */
+/** 座位序号 → 颜色（3 人局：seat0=red、seat1=green、seat2=blue；向后兼容）。 */
 export const SEAT_COLORS = ['red', 'green', 'blue'];
 
+/** 全部 6 色（多人模式）。 */
+export const ALL_COLORS = ['red', 'green', 'blue', 'yellow', 'purple', 'orange'];
+
+/** 每方棋子数（= 营地格数，进度分母；与后端 constants.js PIECES_PER_COLOR 一致）。 */
+export const PIECES_PER_COLOR = 10;
+
+/** 支持的对局人数。 */
+export const PLAYER_COUNTS = [2, 3, 4, 6];
+
+/**
+ * 对局人数 → 座位序号 → 颜色（与后端 constants.js MODE_SEAT_COLORS 一致）。
+ * 2 人对角、3 人现状、4 人两组对角、6 人全角环序。
+ */
+export const MODE_SEAT_COLORS = {
+  2: ['red', 'yellow'],
+  3: ['red', 'green', 'blue'],
+  4: ['red', 'yellow', 'blue', 'purple'],
+  6: ['yellow', 'green', 'purple', 'red', 'orange', 'blue'],
+};
+
 /** 颜色 → 中文名。 */
-export const COLOR_LABELS = Object.freeze({ red: '红', green: '绿', blue: '蓝' });
+export const COLOR_LABELS = Object.freeze({
+  red: '红',
+  green: '绿',
+  blue: '蓝',
+  yellow: '黄',
+  purple: '紫',
+  orange: '橙',
+});
 
 /** 颜色 → 棋子主填充色（十六进制）。 */
 export const COLOR_FILL = Object.freeze({
   red: '#f43f5e',
   green: '#10b981',
   blue: '#38bdf8',
+  yellow: '#facc15',
+  purple: '#a78bfa',
+  orange: '#fb923c',
 });
 
 /** 颜色 → 棋子渐变亮端（顶部受光面，用于立体渐变第一 stop）。 */
@@ -25,6 +55,9 @@ export const COLOR_LIGHT = Object.freeze({
   red: '#fda4af',
   green: '#6ee7b7',
   blue: '#7dd3fc',
+  yellow: '#fef08a',
+  purple: '#ddd6fe',
+  orange: '#fed7aa',
 });
 
 /** 颜色 → 棋子渐变深端（径向渐变底部，制造立体感）。 */
@@ -32,6 +65,9 @@ export const COLOR_DEEP = Object.freeze({
   red: '#9f1239',
   green: '#065f46',
   blue: '#075985',
+  yellow: '#a16207',
+  purple: '#5b21b6',
+  orange: '#c2410c',
 });
 
 /** 颜色 → home/target 三角底色（半透明 tint，透出木纹）。 */
@@ -39,6 +75,9 @@ export const COLOR_TINT = Object.freeze({
   red: 'rgba(244, 63, 94, 0.18)',
   green: 'rgba(16, 185, 129, 0.18)',
   blue: 'rgba(56, 189, 248, 0.18)',
+  yellow: 'rgba(250, 204, 21, 0.16)',
+  purple: 'rgba(167, 139, 250, 0.18)',
+  orange: 'rgba(251, 146, 60, 0.18)',
 });
 
 /** 颜色 → 描边色（target 高亮 / 当前回合高亮 / 棋子轮廓）。 */
@@ -46,6 +85,9 @@ export const COLOR_STROKE = Object.freeze({
   red: '#fb7185',
   green: '#34d399',
   blue: '#60a5fa',
+  yellow: '#eab308',
+  purple: '#c4b5fd',
+  orange: '#fdba74',
 });
 
 /**

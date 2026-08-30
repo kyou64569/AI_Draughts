@@ -22,6 +22,7 @@ import { sound } from '../../utils/sound.js';
 
 const NAV = [
   { to: '/rooms', label: '对局大厅', icon: '♟' },
+  { to: '/tournaments', label: '锦标赛', icon: '🏁' },
   { to: '/history', label: '历史战绩', icon: '🏆' },
   { to: '/model-configs', label: '模型配置', icon: '⚙' },
   { to: '/ai-players', label: 'AI 玩家', icon: '🤖' },

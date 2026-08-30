@@ -42,6 +42,20 @@ function parseCorsOrigin() {
   return raw.split(',').map((s) => s.trim()).filter(Boolean);
 }
 
+/**
+ * 解析 TRUST_PROXY：反向代理（Nginx/负载均衡）后部署时设为代理层数（如 1）或 true，
+ * 使 req.ip 取 X-Forwarded-For 中的真实客户端 IP（否则限流会把所有请求算到代理头上）。
+ * 默认关闭：直连部署时开启会允许伪造 X-Forwarded-For 绕过限流。
+ * @returns {boolean|number}
+ */
+function parseTrustProxy() {
+  const raw = (process.env.TRUST_PROXY ?? '').trim();
+  if (raw === '') return false;
+  if (raw === 'true') return true;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : false;
+}
+
 /** 全局配置对象（只读语义，勿在运行期修改）。 */
 export const config = Object.freeze({
   port: intEnv('PORT', 3001),
@@ -49,6 +63,7 @@ export const config = Object.freeze({
     ? path.resolve(process.env.DATA_DIR)
     : path.resolve(SERVER_ROOT, 'data'),
   corsOrigin: parseCorsOrigin(),
+  trustProxy: parseTrustProxy(),
   sseHeartbeatMs: intEnv('SSE_HEARTBEAT_MS', SSE_HEARTBEAT_MS),
   llmConnectTimeoutMs: intEnv('LLM_CONNECT_TIMEOUT_MS', LLM_CONNECT_TIMEOUT_MS),
   llmTimeoutMs: intEnv('LLM_TIMEOUT_MS', LLM_TIMEOUT_MS),

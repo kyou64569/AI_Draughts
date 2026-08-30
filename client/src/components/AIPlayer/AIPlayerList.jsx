@@ -36,6 +36,7 @@ export default function AIPlayerList({ players, onEdit, onDelete }) {
             <TableCell>绑定配置</TableCell>
             <TableCell>模型</TableCell>
             <TableCell>思考强度</TableCell>
+            <TableCell align="right">ELO</TableCell>
             <TableCell align="right">操作</TableCell>
           </TableRow>
         </TableHead>
@@ -51,6 +52,14 @@ export default function AIPlayerList({ players, onEdit, onDelete }) {
               </TableCell>
               <TableCell>
                 <Chip size="small" label={THINKING_LABEL[p.thinkingLevel] ?? '模型默认'} />
+              </TableCell>
+              <TableCell align="right">
+                <Chip
+                  size="small"
+                  color={p.elo >= 1300 ? 'success' : p.elo <= 1100 ? 'default' : 'primary'}
+                  label={p.elo ?? 1200}
+                  title="ELO 评分：AI 对 AI 对局按名次自动更新"
+                />
               </TableCell>
               <TableCell align="right">
                 <Stack direction="row" spacing={0.8} justifyContent="flex-end" useFlexGap>

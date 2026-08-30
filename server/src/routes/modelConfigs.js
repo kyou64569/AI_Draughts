@@ -4,7 +4,7 @@
  */
 import express from 'express';
 
-import { ERROR_CODES } from '../constants.js';
+import { ERROR_CODES, LLM_PROVIDERS } from '../constants.js';
 import {
   asyncHandler,
   conflict,
@@ -48,6 +48,17 @@ function normalizeBaseUrl(value) {
   return raw.replace(/\/+$/, '');
 }
 
+/**
+ * 校验 provider 协议取值（缺省 openai 兼容旧数据）。
+ * @param {any} value
+ * @returns {string}
+ */
+function normalizeProvider(value) {
+  if (value === undefined || value === null || value === '') return 'openai';
+  if (LLM_PROVIDERS.includes(value)) return value;
+  throw badRequest(`provider 必须是 ${LLM_PROVIDERS.join(' | ')} 之一`);
+}
+
 /** GET /api/model-configs — 列表（公开字段）。 */
 router.get(
   '/',
@@ -62,12 +73,14 @@ router.post(
   '/',
   asyncHandler(async (req, res) => {
     const name = requireString(req.body?.name, 'name');
+    const provider = normalizeProvider(req.body?.provider);
     const baseUrl = normalizeBaseUrl(req.body?.baseUrl);
     const apiKey = typeof req.body?.apiKey === 'string' ? req.body.apiKey.trim() : '';
     const now = store.nowIso();
     const cfg = {
       id: store.newId(),
       name,
+      provider,
       baseUrl,
       apiKey,
       models: [],
@@ -96,6 +109,12 @@ router.put(
     /** @type {Record<string, any>} */
     const patch = { updatedAt: store.nowIso() };
     if (req.body?.name !== undefined) patch.name = requireString(req.body.name, 'name');
+    if (req.body?.provider !== undefined) {
+      patch.provider = normalizeProvider(req.body.provider);
+      // 与旧值比较需按"缺省 openai"补齐（旧配置无 provider 字段），
+      // 避免对旧配置显式 PATCH openai 时误清缓存。协议变了，旧模型名必然失效。
+      if (patch.provider !== normalizeProvider(cfg.provider)) patch.models = [];
+    }
     if (req.body?.baseUrl !== undefined) {
       patch.baseUrl = normalizeBaseUrl(req.body.baseUrl);
       if (patch.baseUrl !== cfg.baseUrl) patch.models = []; // 换了地址，模型缓存失效

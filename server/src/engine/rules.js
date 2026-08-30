@@ -8,7 +8,13 @@
  *    都是一条独立合法走法；跳到无子可跳为止只是其中一种（信息量最大）。
  * 中间格只是"落脚点"，被跳过的棋子不移除（中国跳棋不吃子）。
  */
-import { DIRECTIONS, MAX_JUMP_CHAINS, MAX_JUMP_DEPTH, SEAT_COLORS } from '../constants.js';
+import {
+  DIRECTIONS,
+  MAX_JUMP_CHAINS,
+  MAX_JUMP_DEPTH,
+  MAX_JUMP_EXPANSIONS,
+  SEAT_COLORS,
+} from '../constants.js';
 import { TARGET_CELLS, isValidCoord, key, parseKey } from './board.js';
 
 /**
@@ -38,8 +44,14 @@ export function getLegalMoves(board, fromKey) {
   // 2) 跳跃（含中途停）：DFS 展开所有可达落点
   /** @type {Map<string, {jumps:number, path:string[]}>} toKey → 最优（跳数最多）路径 */
   const landings = new Map();
+  // 扩张预算（每次调用独立计数）：本 dfs 按「路径」而非「落点」递归，病态局面下
+  // 简单路径数呈指数增长（实测单子 18 条走法耗时 3466ms）。本函数是同步的，会冻结
+  // 整个事件循环且无超时可中断，故在此熔断：耗尽即停止展开，返回已收集到的走法
+  //（可能不完整，但保证耗时有界）。详见 MAX_JUMP_EXPANSIONS 注释。
+  let expansions = 0;
   const dfs = (curKey, path) => {
     if (path.length - 1 >= MAX_JUMP_DEPTH) return; // 深度保险
+    if (expansions > MAX_JUMP_EXPANSIONS) return; // 预算熔断
     const [cq, cr, cs] = parseKey(curKey);
     for (const [dq, dr, ds] of DIRECTIONS) {
       const oq = cq + dq;
@@ -53,6 +65,8 @@ export function getLegalMoves(board, fromKey) {
       const lk = key(lq, lr, ls);
       if (board[ok] == null || board[lk] != null) continue;
       if (path.includes(lk)) continue; // 防环
+      expansions += 1;
+      if (expansions > MAX_JUMP_EXPANSIONS) return; // 预算熔断
       const jumps = path.length; // 本次跳跃后的总跳数（= 新路径格数 - 1）
       const existing = landings.get(lk);
       if (!existing || jumps > existing.jumps) {

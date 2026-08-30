@@ -5,6 +5,7 @@
  * 纯函数模块，无任何 I/O，便于单测（architecture.md §4）。
  */
 import {
+  ALL_COLORS,
   BOARD_SIZE,
   COLOR_HOME,
   COLOR_TARGET,
@@ -188,26 +189,20 @@ export function isInCorner(coordKey, cornerName) {
   return getCornerOfKey(coordKey) === cornerName;
 }
 
-/** @type {Readonly<Record<string, ReadonlyArray<string>>>} 颜色 → home 10 格。 */
-export const HOME_CELLS = Object.freeze({
-  red: CORNER_CELLS[COLOR_HOME.red],
-  green: CORNER_CELLS[COLOR_HOME.green],
-  blue: CORNER_CELLS[COLOR_HOME.blue],
-});
+/** @type {Readonly<Record<string, ReadonlyArray<string>>>} 颜色（6 色）→ home 10 格。 */
+export const HOME_CELLS = Object.freeze(
+  Object.fromEntries(ALL_COLORS.map((color) => [color, CORNER_CELLS[COLOR_HOME[color]]])),
+);
 
-/** @type {Readonly<Record<string, ReadonlyArray<string>>>} 颜色 → target 10 格。 */
-export const TARGET_CELLS = Object.freeze({
-  red: CORNER_CELLS[COLOR_TARGET.red],
-  green: CORNER_CELLS[COLOR_TARGET.green],
-  blue: CORNER_CELLS[COLOR_TARGET.blue],
-});
+/** @type {Readonly<Record<string, ReadonlyArray<string>>>} 颜色（6 色）→ target 10 格。 */
+export const TARGET_CELLS = Object.freeze(
+  Object.fromEntries(ALL_COLORS.map((color) => [color, CORNER_CELLS[COLOR_TARGET[color]]])),
+);
 
 /** @type {Readonly<Record<string, string>>} 颜色 → target 顶点坐标（兜底推进的参考点）。 */
-export const TARGET_APEX = Object.freeze({
-  red: CORNER_APEX[COLOR_TARGET.red],
-  green: CORNER_APEX[COLOR_TARGET.green],
-  blue: CORNER_APEX[COLOR_TARGET.blue],
-});
+export const TARGET_APEX = Object.freeze(
+  Object.fromEntries(ALL_COLORS.map((color) => [color, CORNER_APEX[COLOR_TARGET[color]]])),
+);
 
 /**
  * 判断坐标是否在某颜色的目标营地内。

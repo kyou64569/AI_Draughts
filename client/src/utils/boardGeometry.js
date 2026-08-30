@@ -6,10 +6,27 @@
 /** 单格半径（像素）。 */
 export const HEX_SIZE = 26;
 
-/** 角名 → home 颜色（对应后端 COLOR_HOME）。 */
-const CORNER_HOME = Object.freeze({ NEG_Q: 'red', NEG_R: 'green', NEG_S: 'blue' });
-/** 角名 → target 颜色（对应后端 COLOR_TARGET）。 */
-const CORNER_TARGET = Object.freeze({ POS_Q: 'red', POS_R: 'green', POS_S: 'blue' });
+/**
+ * 角名 → home/target 颜色（与后端 constants.js COLOR_HOME/COLOR_TARGET 一致，6 色固定占角）。
+ * 未参与对局的角（如 2/3/4 人局）由 Board 按"场内颜色"过滤着色。
+ */
+const CORNER_HOME = Object.freeze({
+  NEG_Q: 'red',
+  NEG_R: 'green',
+  NEG_S: 'blue',
+  POS_Q: 'yellow',
+  POS_S: 'purple',
+  POS_R: 'orange',
+});
+/** 角名 → target 颜色（home 的对角）。 */
+const CORNER_TARGET = Object.freeze({
+  POS_Q: 'red',
+  POS_R: 'green',
+  POS_S: 'blue',
+  NEG_Q: 'yellow',
+  NEG_S: 'purple',
+  NEG_R: 'orange',
+});
 
 /** 坐标 → 键字符串 "q,r,s"。 */
 export function key(q, r, s) {

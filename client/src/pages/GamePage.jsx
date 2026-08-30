@@ -1,10 +1,11 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
-import { useParams } from 'react-router-dom';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import { Box, Typography, Button, CircularProgress, Alert, Paper, Chip } from '@mui/material';
 import { useMediaQuery, useTheme } from '@mui/material';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import SmartToyIcon from '@mui/icons-material/SmartToy';
 import PersonIcon from '@mui/icons-material/Person';
+import PlayCircleIcon from '@mui/icons-material/PlayCircle';
 
 import { getLegalMoves, humanMove } from '../api/client.js';
 import { useApp } from '../context/AppContext.jsx';
@@ -19,16 +20,21 @@ import { sound } from '../utils/sound.js';
 const END_REASON_LABEL = {
   all_finished: '三色全部入营',
   deadlock: '对局死锁',
+  stall: '无进展停滞',
   ply_limit: '达到手数上限',
 };
 
+/** 音效增量同步上限：超过该值视为重连补发快照，静默重置基线（不连播一串旧音）。 */
+const SOUND_SYNC_LIMIT = 3;
+
 export default function GamePage() {
   const { id: roomId } = useParams();
+  const navigate = useNavigate();
   const app = useApp();
   const theme = useTheme();
   const isDesktop = useMediaQuery(theme.breakpoints.up('md'));
 
-  const { room, game, logs, finished } = useRoomStream(roomId);
+  const { room, game, logs, finished, thinking } = useRoomStream(roomId);
 
   const [selected, setSelected] = useState(null);
   const [legalMoves, setLegalMoves] = useState([]);
@@ -40,7 +46,9 @@ export default function GamePage() {
   );
 
   // 落子音效：监听 history 增量（单步 → 移动音；连跳 → 按跳数连奏连跳音）。
-  // 初始快照不播；同一 history 长度不重复触发。
+  // 初始快照不播；两次 state 广播被 React 合并渲染时（AI 托管秒回时会发生）
+  // prevLen 一次前进多手 —— 逐条补播，不漏掉人类玩家的连跳音；
+  // 增量超过 SOUND_SYNC_LIMIT（重连补发快照）或长度回退时静默重置基线。
   const initedRef = useRef(false);
   const prevLenRef = useRef(0);
   useEffect(() => {
@@ -56,12 +64,20 @@ export default function GamePage() {
       prevLenRef.current = len;
       return;
     }
-    if (len > prevLenRef.current) {
-      const last = h[len - 1];
-      // 连跳：path 含中间落点，跳数 = path.length - 1；单步 path 长度 2 或无 path
-      const jumpSteps = Array.isArray(last?.path) && last.path.length > 0 ? last.path.length - 1 : 1;
-      if (jumpSteps >= 2) sound.multiJump(jumpSteps);
-      else sound.move();
+    const prev = prevLenRef.current;
+    if (len > prev && len - prev <= SOUND_SYNC_LIMIT) {
+      let cursor = 0; // AudioContext 时间轴偏移：连播时按序排队
+      for (let i = prev; i < len; i += 1) {
+        const m = h[i];
+        const jumpSteps = Array.isArray(m?.path) && m.path.length > 0 ? m.path.length - 1 : 1;
+        if (jumpSteps >= 2) {
+          sound.multiJump(jumpSteps, cursor);
+          cursor += jumpSteps * 0.085 + 0.12;
+        } else {
+          sound.move(cursor);
+          cursor += 0.12;
+        }
+      }
     }
     prevLenRef.current = len;
   }, [game]);
@@ -79,12 +95,16 @@ export default function GamePage() {
         if (!cancelled) setLegalMoves(Array.isArray(m) ? m : []);
       })
       .catch(() => {
-        if (!cancelled) setLegalMoves([]);
+        if (cancelled) return;
+        setLegalMoves([]);
+        // 不能静默吞错：否则用户看到"轮到你了"却点不动，且无法区分
+        // 是网络问题还是本就无合法走法。
+        app.error('获取合法走法失败，请检查网络后重试');
       });
     return () => {
       cancelled = true;
     };
-  }, [roomId, game?.turnSeat, game?.status, isHumanTurn]);
+  }, [roomId, game?.turnSeat, game?.status, isHumanTurn, app]);
 
   const legalTargets = useMemo(() => {
     if (!selected) return [];
@@ -96,38 +116,62 @@ export default function GamePage() {
       ? game.history[game.history.length - 1]
       : null;
 
+  // 人类座位自己的上一手：AI 托管秒回时"最新一手"高亮会被立刻覆盖，
+  // 人类自己的虚线保留到自己再次落子，连跳路径才看得清。
+  const ownLastMove = useMemo(() => {
+    const h = game?.history;
+    if (!h || h.length === 0) return null;
+    const humanSeat = game.players?.find((p) => p.kind === 'human')?.seat;
+    if (humanSeat == null) return null;
+    for (let i = h.length - 1; i >= 0; i -= 1) {
+      if (h[i].seat === humanSeat) return h[i];
+    }
+    return null;
+  }, [game]);
+
   const currentSeat = game && game.status === 'playing' ? game.turnSeat : null;
 
-  const handleCellClick = (key) => {
-    if (!isHumanTurn || !game) return;
-    const color = currentPlayer.color;
-    if (!selected) {
-      if (game.board[key] === color) setSelected(key);
-      return;
-    }
-    if (key === selected) {
-      setSelected(null);
-      return;
-    }
-    if (legalTargets.includes(key)) {
-      submitMove(selected, key);
-      return;
-    }
-    if (game.board[key] === color) setSelected(key);
-    else setSelected(null);
-  };
+  // submitMove 需先于 handleCellClick 声明：后者依赖数组在渲染期即求值，引用后声明
+  // 的 const 会触发 TDZ（Cannot access before initialization）。
+  const submitMove = useCallback(
+    async (from, to) => {
+      setMoving(true);
+      try {
+        await humanMove(roomId, from, to);
+        setSelected(null);
+      } catch (e) {
+        app.error(e.message || '落子失败');
+      } finally {
+        setMoving(false);
+      }
+    },
+    [roomId, app],
+  );
 
-  const submitMove = async (from, to) => {
-    setMoving(true);
-    try {
-      await humanMove(roomId, from, to);
-      setSelected(null);
-    } catch (e) {
-      app.error(e.message || '落子失败');
-    } finally {
-      setMoving(false);
-    }
-  };
+  // useCallback + Board memo：仅日志/房间等旁路更新时跳过棋盘 SVG 重渲染
+  const handleCellClick = useCallback(
+    (key) => {
+      // moving 为提交中的互斥锁：连点会在第一手尚未返回时再发一请求，
+      // 服务端会按已推进的 turnSeat 拒绝并弹「落子失败」，属误导性报错。
+      if (!isHumanTurn || !game || moving) return;
+      const color = currentPlayer.color;
+      if (!selected) {
+        if (game.board[key] === color) setSelected(key);
+        return;
+      }
+      if (key === selected) {
+        setSelected(null);
+        return;
+      }
+      if (legalTargets.includes(key)) {
+        submitMove(selected, key);
+        return;
+      }
+      if (game.board[key] === color) setSelected(key);
+      else setSelected(null);
+    },
+    [isHumanTurn, game, moving, currentPlayer, selected, legalTargets, submitMove],
+  );
 
   if (!room && !game) {
     return (
@@ -157,6 +201,17 @@ export default function GamePage() {
         <Typography variant="body2" color="text.secondary">
           {game?.endReason ? END_REASON_LABEL[game.endReason] ?? game.endReason : ''}
         </Typography>
+        {game?.id && (
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<PlayCircleIcon />}
+            onClick={() => navigate(`/history/${game.id}`)}
+            sx={{ ml: 'auto' }}
+          >
+            查看回放
+          </Button>
+        )}
       </Paper>
     );
   } else if (game && game.status === 'playing' && currentPlayer) {
@@ -206,6 +261,23 @@ export default function GamePage() {
               </>
             )}
           </Typography>
+          {/* 流式思考：AI 决策期间实时展示推理片段（模型支持 reasoning 时才有内容） */}
+          {currentPlayer.kind === 'ai' && thinking?.seat === game.turnSeat && thinking.text && (
+            <Typography
+              variant="caption"
+              sx={{
+                display: 'block',
+                mt: 0.25,
+                fontStyle: 'italic',
+                color: 'text.secondary',
+                maxHeight: 42,
+                overflow: 'hidden',
+                wordBreak: 'break-all',
+              }}
+            >
+              {thinking.text}
+            </Typography>
+          )}
         </Box>
         <CircularProgress size={16} thickness={5} />
       </Paper>
@@ -221,7 +293,8 @@ export default function GamePage() {
   );
 
   const backBtn = (
-    <Button startIcon={<ArrowBackIcon />} onClick={() => window.history.back()} sx={{ mb: 1.5, borderRadius: 10 }}>
+    // 直接导航到房间列表：书签/刷新/分享链接进入时 history.back() 会离开应用
+    <Button startIcon={<ArrowBackIcon />} onClick={() => navigate('/rooms')} sx={{ mb: 1.5, borderRadius: 10 }}>
       返回房间
     </Button>
   );
@@ -294,8 +367,9 @@ export default function GamePage() {
         selected={selected}
         legalTargets={legalTargets}
         lastMove={lastMove}
+        ownLastMove={ownLastMove}
         currentSeat={currentSeat}
-        interactive={isHumanTurn}
+        interactive={isHumanTurn && !moving}
         onCellClick={handleCellClick}
       />
     </Paper>

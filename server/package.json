@@ -12,7 +12,7 @@
     "start": "node src/index.js",
     "start:auto": "node start.mjs",
     "dev": "node --watch src/index.js",
-    "test": "node test/engine.test.mjs && node test/store.test.mjs"
+    "test": "node test/engine.test.mjs && node test/store.test.mjs && node test/elo.test.mjs && node test/providers.test.mjs && node test/tournament.test.mjs"
   },
   "dependencies": {
     "express": "^5.0.0",

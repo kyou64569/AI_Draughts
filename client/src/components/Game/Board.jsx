@@ -1,7 +1,9 @@
+import { memo } from 'react';
 import { keyframes, css } from '@emotion/react';
 
 import { BOARD_CELLS, hexPoints, HEX_SIZE } from '../../utils/boardGeometry.js';
 import {
+  ALL_COLORS,
   COLOR_DEEP,
   COLOR_FILL,
   COLOR_LIGHT,
@@ -28,16 +30,16 @@ const selectAnim = keyframes`
   50%      { transform: scale(1.12); }
 `;
 
-/** 当前回合方棋子外圈呼吸光晕。 */
+/** 当前回合方棋子外圈呼吸光晕（用 transform 缩放代替 SVG r 属性动画，兼容性更好）。 */
 const glowAnim = keyframes`
-  0%, 100% { opacity: 0.25; r: ${HEX_SIZE * 0.62}px; }
-  50%      { opacity: 0.85; r: ${HEX_SIZE * 0.72}px; }
+  0%, 100% { transform: scale(1);    opacity: 0.25; }
+  50%      { transform: scale(1.16); opacity: 0.85; }
 `;
 
 /** 合法落点圆点呼吸。 */
 const breatheAnim = keyframes`
-  0%, 100% { opacity: 0.45; r: ${HEX_SIZE * 0.24}px; }
-  50%      { opacity: 0.95; r: ${HEX_SIZE * 0.32}px; }
+  0%, 100% { transform: scale(0.86); opacity: 0.45; }
+  50%      { transform: scale(1.14); opacity: 0.95; }
 `;
 
 const dropCss = css`
@@ -101,42 +103,99 @@ const WOOD_GRAINS = [
  * - 合法落点呼吸圆点；上一手虚线连线；连跳沿路径动画点；
  * - 落子脉冲 / 选中呼吸 / 当前回合光晕 / 人类回合 hover。
  *
+ * memo 化：props 均不变化时跳过重渲染，使 DecisionLog 等旁路更新
+ * （log/room 事件）不触发整棵 SVG 重绘。
+ *
  * @param {object|null} game GameState（含 board / turnSeat / history）
  * @param {string|null} selected 当前选中的己方棋子键
  * @param {string[]} legalTargets 合法落点键列表
  * @param {{from:string,to:string,path?:string[]}|null} lastMove 上一手
+ * @param {{from:string,to:string,path?:string[]}|null} [ownLastMove] 人类座位自己
+ *   的上一手：AI 秒回会覆盖 lastMove 高亮，该轨迹持续显示到人类再次落子
  * @param {number|null} currentSeat 当前回合座位
  * @param {boolean} interactive 是否可点击（仅人类回合）
  * @param {(key:string)=>void} onCellClick
  */
-export default function Board({
+/** 人类玩家自己上一手的轨迹色（与最新一手的橙色区分，持续显示到其再次落子）。 */
+const OWN_TRACE_COLOR = '#7dd3fc';
+
+function Board({
   game,
   selected,
   legalTargets,
   lastMove,
+  ownLastMove,
   currentSeat,
   interactive,
   onCellClick,
 }) {
   const { cells, width, height } = BOARD_CELLS;
   const board = game?.board ?? null;
-  const currentColor = currentSeat != null ? SEAT_COLORS[currentSeat] : null;
+  // 当前回合颜色：优先从 players 取（多人模式座位≠固定颜色），缺省回退 3 人局映射
+  const currentColor =
+    currentSeat != null
+      ? game?.players?.[currentSeat]?.color ?? SEAT_COLORS[currentSeat] ?? null
+      : null;
+  // 本局在场颜色：未参战的角（2/3/4 人局）home/target 不着色
+  const activeColors = new Set(Object.values(board ?? {}).filter(Boolean));
   const targetSet = new Set(legalTargets || []);
   const moveCount = game?.history?.length ?? 0;
 
   const cellByKey = new Map(cells.map((c) => [c.key, c]));
-  const lastFrom = lastMove ? cellByKey.get(lastMove.from) : undefined;
-  const lastTo = lastMove ? cellByKey.get(lastMove.to) : undefined;
+  // 人类自己上一手的持续轨迹：与"最新一手"是同一手时不重复画
+  // 使用深度比较而非引用相等，避免状态重构导致重复绘制
+  const isSameMove = ownLastMove && lastMove &&
+    ownLastMove.from === lastMove.from &&
+    ownLastMove.to === lastMove.to &&
+    ownLastMove.seat === lastMove.seat;
+  const ownTrace = ownLastMove && !isSameMove ? ownLastMove : null;
+  const ownFromKey = ownTrace ? ownTrace.from : null;
 
-  // 连跳路径（path 含中间落点，长度 >= 3 即连跳）
-  const jumpPath =
-    lastMove?.path && lastMove.path.length >= 3 ? lastMove.path.map((k) => cellByKey.get(k)).filter(Boolean) : [];
-  const jumpLine =
-    jumpPath.length >= 2
-      ? jumpPath
-          .map((c, i) => `${i === 0 ? 'M' : 'L'}${c.cx.toFixed(1)} ${c.cy.toFixed(1)}`)
-          .join(' ')
-      : null;
+  /**
+   * 渲染一条走法轨迹：单步虚线段 / 连跳折线（animated 时带路径移动点）。
+   * @param {object|null} move 走法记录（from/to/path）
+   * @param {{color:string, opacity:number, animated:boolean}} styleOpts
+   */
+  const renderTrace = (move, { color, opacity, animated }) => {
+    if (!move) return null;
+    const from = cellByKey.get(move.from);
+    const to = cellByKey.get(move.to);
+    // 连跳路径（path 含中间落点，长度 >= 3 即连跳）
+    const jumpPath =
+      move.path && move.path.length >= 3 ? move.path.map((k) => cellByKey.get(k)).filter(Boolean) : [];
+    const jumpLine =
+      jumpPath.length >= 2
+        ? jumpPath
+            .map((c, i) => `${i === 0 ? 'M' : 'L'}${c.cx.toFixed(1)} ${c.cy.toFixed(1)}`)
+            .join(' ')
+        : null;
+    return (
+      <g pointerEvents="none">
+        {from && to && (
+          <line
+            x1={from.cx}
+            y1={from.cy}
+            x2={to.cx}
+            y2={to.cy}
+            stroke={color}
+            strokeWidth={2.5}
+            strokeDasharray="6 4"
+            opacity={opacity}
+          />
+        )}
+        {jumpLine && (
+          <>
+            <path d={jumpLine} fill="none" stroke={color} strokeWidth={2.5} strokeDasharray="6 4" opacity={opacity} />
+            {animated && (
+              <circle r={4.5} fill={color}>
+                <animateMotion dur="1.4s" repeatCount="indefinite" path={jumpLine} />
+              </circle>
+            )}
+          </>
+        )}
+      </g>
+    );
+  };
 
   return (
     <svg
@@ -179,7 +238,7 @@ export default function Board({
         </radialGradient>
 
         {/* 棋子：三档立体渐变（顶部受光 → 主色 → 底部深） */}
-        {SEAT_COLORS.map((color) => (
+        {ALL_COLORS.map((color) => (
           <radialGradient key={color} id={`piece-grad-${color}`} cx="35%" cy="26%" r="82%">
             <stop offset="0%" stopColor={COLOR_LIGHT[color]} />
             <stop offset="32%" stopColor={COLOR_FILL[color]} />
@@ -244,8 +303,8 @@ export default function Board({
       {/* ============ 格子与棋子 ============ */}
       {cells.map((c) => {
         const piece = board ? board[c.key] : null;
-        const isHome = c.homeColor;
-        const isTarget = c.targetColor;
+        const isHome = activeColors.has(c.homeColor) ? c.homeColor : null;
+        const isTarget = activeColors.has(c.targetColor) ? c.targetColor : null;
         const isSelected = selected === c.key;
         const isLegalTarget = targetSet.has(c.key);
         const isCurrentPiece = Boolean(currentColor) && piece === currentColor;
@@ -352,7 +411,7 @@ export default function Board({
               </g>
             )}
 
-            {/* 当前回合方棋子：呼吸光晕环 */}
+            {/* 当前回合方棋子：呼吸光晕环（描边不随缩放变粗） */}
             {piece && isCurrentPiece && !isSelected && (
               <circle
                 cx={c.cx}
@@ -361,6 +420,7 @@ export default function Board({
                 fill="none"
                 stroke={COLOR_STROKE[currentColor]}
                 strokeWidth={2.5}
+                vectorEffect="non-scaling-stroke"
                 className={glowCss}
                 pointerEvents="none"
               />
@@ -379,32 +439,29 @@ export default function Board({
                 pointerEvents="none"
               />
             )}
+            {/* 人类自己上一手起点：浅蓝空心环（持续显示到其再次落子） */}
+            {ownFromKey === c.key && (
+              <circle
+                cx={c.cx}
+                cy={c.cy}
+                r={HEX_SIZE * 0.6}
+                fill="none"
+                stroke={OWN_TRACE_COLOR}
+                strokeWidth={2}
+                strokeDasharray="3 3"
+                opacity={0.8}
+                pointerEvents="none"
+              />
+            )}
           </g>
         );
       })}
 
-      {/* 上一手连线：单步虚线 / 连跳折线 + 移动点 */}
-      {lastFrom && lastTo && (
-        <line
-          x1={lastFrom.cx}
-          y1={lastFrom.cy}
-          x2={lastTo.cx}
-          y2={lastTo.cy}
-          stroke="#fb923c"
-          strokeWidth={2.5}
-          strokeDasharray="6 4"
-          opacity={0.75}
-          pointerEvents="none"
-        />
-      )}
-      {jumpLine && (
-        <g pointerEvents="none">
-          <path d={jumpLine} fill="none" stroke="#fb923c" strokeWidth={2.5} strokeDasharray="6 4" opacity={0.75} />
-          <circle r={4.5} fill="#fb923c">
-            <animateMotion dur="1.4s" repeatCount="indefinite" path={jumpLine} />
-          </circle>
-        </g>
-      )}
+      {/* 上一手连线：最新一手（橙，带路径移动点）+ 人类自己上一手（浅蓝，持续显示） */}
+      {renderTrace(lastMove, { color: '#fb923c', opacity: 0.75, animated: true })}
+      {ownTrace && renderTrace(ownTrace, { color: OWN_TRACE_COLOR, opacity: 0.55, animated: false })}
     </svg>
   );
 }
+
+export default memo(Board);
